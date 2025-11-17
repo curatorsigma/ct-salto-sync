@@ -38,13 +38,13 @@ impl Config {
     }
 
     pub async fn create() -> Result<Config, Box<dyn std::error::Error>> {
-        let path = Path::new("/etc/ct-ta-sync/config.yaml");
+        let path = Path::new("/etc/salto-sync/config.yaml");
         let f = match File::open(path) {
             Ok(x) => x,
             Err(e) => {
                 event!(
                     Level::ERROR,
-                    "config file /etc/ct-ta-sync/config.yaml not readable: {e}"
+                    "config file /etc/salto-sync/config.yaml not readable: {e}"
                 );
                 return Err(Box::new(e));
             }
