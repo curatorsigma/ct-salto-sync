@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use crate::{config::Config, InShutdown};
+use crate::{InShutdown, config::Config};
 
 pub async fn keep_staging_table_up_to_date(
     config: Arc<Config>,
@@ -13,6 +13,6 @@ pub async fn keep_staging_table_up_to_date(
     // loop
     // go through all bookings in the db
     // find persons that should have access from CT
-        // get their salto ext id
-        // push the relevant zones into their row in the staging table
+    // get their salto ext id
+    // push the relevant zones into their row in the staging table
 }

@@ -1,37 +1,58 @@
 use std::{fs::File, path::Path};
 
 use serde::Deserialize;
-use sqlx::{Pool, Sqlite};
-use tracing::{event, Level};
+use tracing::{Level, event};
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct ConfigData {
-    pub ct: ChurchToolsConfig,
+    pub ct: ChurchToolsConfigData,
+    pub salto: SaltoConfigData,
     pub global: GlobalConfig,
     pub rooms: Vec<RoomConfig>,
+}
+
+
+#[derive(Deserialize)]
+pub(crate) struct SaltoConfigData {
+    pub base_url: String,
+    pub username: String,
+    pub password: String,
+}
+impl core::fmt::Debug for SaltoConfigData {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        f.debug_struct("SaltoConfigData")
+            .field("base_url", &self.base_url)
+            .field("username", &self.username)
+            .field("password", &"[redacted]")
+            .finish()
+    }
+}
+#[derive(Debug)] 
+pub(crate) struct SaltoConfig {
+    pub base_url: String,
+    pub client: reqwest::Client,
 }
 
 #[derive(Debug)]
 pub(crate) struct Config {
     pub ct: ChurchToolsConfig,
-    pub db: Pool<Sqlite>,
-    pub ct_client: reqwest::Client,
+    pub salto: SaltoConfig,
     pub global: GlobalConfig,
     pub rooms: Vec<RoomConfig>,
 }
 impl Config {
-    async fn from_config_data(cd: ConfigData) -> Result<Config, Box<dyn std::error::Error>> {
+    async fn from_config_data(cd: ConfigData) -> Result<Config, Box<dyn core::error::Error>> {
         let connect_options = sqlx::sqlite::SqliteConnectOptions::new()
             .filename(crate::BOOKING_DATABASE_NAME)
             .create_if_missing(true);
         let db = sqlx::SqlitePool::connect_with(connect_options).await?;
 
         let ct_client = crate::ct::create_client(&cd.ct.login_token)?;
+        let salto_client = crate::salto::create_client(&cd.salto).await?;
 
         Ok(Config {
-            ct: cd.ct,
-            db,
-            ct_client,
+            salto: SaltoConfig { base_url: cd.salto.base_url, client: salto_client }
+            ct: ChurchToolsConfig { host: cd.ct.host, client: ct_client, group_magic_prefix: cd.ct.group_magic_prefix }
             global: cd.global,
             rooms: cd.rooms,
         })
@@ -58,32 +79,69 @@ impl Config {
         };
         Config::from_config_data(config_data).await
     }
+
+    /// Find the ExtId for this CT resource in the config
+    pub fn room_ext_id(&self, resource_id: i64) -> Option<&String> {
+        return self
+            .rooms
+            .iter()
+            .find(|room| room.ct_id == resource_id)
+            .map(|room| &room.salto_ext_id);
+    }
 }
 
 #[derive(Debug, Deserialize)]
 pub(crate) struct GlobalConfig {
     /// How often should we sync? In s.
-    pub sync_frequency: u64,
+    pub sync_frequency: u32,
+    /// How long should a room be open to authorized persons before the actual booking begins? In
+    /// m.
+    #[serde(deserialize_with = "deserialize_timedelta_from_minutes")]
+    pub prehold_time: chrono::TimeDelta,
+    /// How long should a room be open to authorized persons after the actual booking has ended? In
+    /// m.
+    #[serde(deserialize_with = "deserialize_timedelta_from_minutes")]
+    pub posthold_time: chrono::TimeDelta,
+    /// At which level should the logger output information? (TRACE, DEBUG, INFO, WARN, ERROR)
     pub log_level: String,
 }
 
+fn deserialize_timedelta_from_minutes<'de, D>(
+    deserializer: D,
+) -> Result<chrono::TimeDelta, D::Error>
+where
+    D: serde::de::Deserializer<'de>,
+{
+    let minutes: u32 = serde::de::Deserialize::deserialize(deserializer)?;
+    Ok(chrono::TimeDelta::minutes(minutes.into()))
+}
+
+
 #[derive(Deserialize)]
-pub(crate) struct ChurchToolsConfig {
+struct ChurchToolsConfigData {
     pub host: String,
     pub login_token: String,
+    pub group_magic_prefix: String,
 }
-impl std::fmt::Debug for ChurchToolsConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.debug_struct("ChurchToolsConfig")
+impl core::fmt::Debug for ChurchToolsConfigData {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+        f.debug_struct("ChurchToolsConfigData")
             .field("host", &self.host)
             .field("login_token", &"[redacated]")
+            .field("group_magic_prefix", &self.group_magic_prefix)
             .finish()
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub struct RoomConfig {
-    pub ct_id: i32,
-    pub salto_ext_id: String,
+#[derive(Debug)]
+pub(crate) struct ChurchToolsConfig {
+    pub host: String,
+    pub client: reqwest::Client,
+    pub group_magic_prefix: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct RoomConfig {
+    pub ct_id: i64,
+    pub salto_ext_id: String,
+}

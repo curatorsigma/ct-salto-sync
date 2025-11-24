@@ -6,13 +6,14 @@ use chrono::Utc;
 use ct::CTApiError;
 use db::DBError;
 use tracing::{error, info};
+use tracing_subscriber::{EnvFilter, prelude::*};
 use tracing_subscriber::{filter, fmt::format::FmtSpan};
-use tracing_subscriber::{prelude::*, EnvFilter};
 
 mod config;
 mod ct;
 mod db;
 mod pull_bookings;
+mod salto;
 mod write_staging;
 
 const BOOKING_DATABASE_NAME: &str = ".bookings.db";
@@ -31,10 +32,12 @@ struct Booking {
     start_time: chrono::DateTime<Utc>,
     /// The booking ends at...
     end_time: chrono::DateTime<Utc>,
-    /// Ct-id of the person that created this booking
-    created_by: i64,
-    /// The description for this booking as set in CT
-    description: String,
+    /// Transponder IDs of other users that are permitted for this booking.
+    ///
+    /// Other users are permitted iff they are members of a CT-group with id gid such that
+    /// `<magic_prefix><gid>` is contained in the description, separated from
+    /// other content by whitespace
+    permitted_transponders: Vec<i64>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -45,8 +48,6 @@ struct Person {
     ct_id: i32,
     /// ID of this persons transponder as given in CT
     transponder_id: i32,
-    /// ID of this person in Salto
-    salt_ext_id: String,
 }
 
 enum InShutdown {
@@ -80,12 +81,12 @@ impl From<CTApiError> for GatherError {
     }
 }
 
-
 async fn signal_handler(
     mut watcher: tokio::sync::watch::Receiver<InShutdown>,
     shutdown_tx: tokio::sync::watch::Sender<InShutdown>,
 ) -> Result<(), std::io::Error> {
-    let mut sigterm = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+    let mut sigterm = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+    {
         Ok(x) => x,
         Err(e) => {
             error!("Failed to install SIGTERM listener: {e} Aborting.");
@@ -101,7 +102,8 @@ async fn signal_handler(
             return Err(e);
         }
     };
-    let mut sigint = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt()) {
+    let mut sigint = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
+    {
         Ok(x) => x,
         Err(e) => {
             error!("Failed to install SIGINT listener: {e} Aborting.");
@@ -166,19 +168,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // cancellation channel
     let (tx, rx) = tokio::sync::watch::channel(InShutdown::No);
 
-    let bookings_handle = tokio::spawn(pull_bookings::keep_bookings_up_to_date(config.clone(), rx, tx.clone()));
+    let bookings_handle = tokio::spawn(pull_bookings::keep_bookings_up_to_date(config.clone(), rx));
 
-    let write_handle = tokio::spawn(write_staging::keep_staging_table_up_to_date(config.clone(), tx.subscribe(), tx.clone()));
+    let write_handle = tokio::spawn(write_staging::keep_staging_table_up_to_date(
+        config.clone(),
+        tx.subscribe(),
+        tx.clone(),
+    ));
 
     // start the Signal handler
     let signal_handle = tokio::spawn(signal_handler(tx.subscribe(), tx.clone()));
 
     // Join both tasks
-    let (bookings_res, write_res, signal_res) = tokio::join!(
-        bookings_handle,
-        write_handle,
-        signal_handle
-    );
+    let (bookings_res, write_res, signal_res) =
+        tokio::join!(bookings_handle, write_handle, signal_handle);
     bookings_res?;
     write_res?;
     signal_res??;
