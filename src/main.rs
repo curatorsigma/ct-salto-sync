@@ -5,6 +5,7 @@ use chrono::Utc;
 
 use ct::CTApiError;
 use db::DBError;
+use salto::SaltoApiError;
 use tracing::{error, info};
 use tracing_subscriber::{EnvFilter, prelude::*};
 use tracing_subscriber::{filter, fmt::format::FmtSpan};
@@ -14,9 +15,6 @@ mod ct;
 mod db;
 mod pull_bookings;
 mod salto;
-mod write_staging;
-
-const BOOKING_DATABASE_NAME: &str = ".bookings.db";
 
 /// A single booking for a room
 #[derive(Debug, PartialEq)]
@@ -40,16 +38,6 @@ struct Booking {
     permitted_transponders: Vec<i64>,
 }
 
-#[derive(Debug, PartialEq)]
-struct Person {
-    /// ID for this person in our db
-    id: i64,
-    /// ID for this person in CT
-    ct_id: i32,
-    /// ID of this persons transponder as given in CT
-    transponder_id: i32,
-}
-
 enum InShutdown {
     Yes,
     No,
@@ -60,12 +48,14 @@ enum InShutdown {
 pub enum GatherError {
     DB(crate::db::DBError),
     CT(CTApiError),
+    Salto(SaltoApiError),
 }
 impl core::fmt::Display for GatherError {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         match self {
             Self::DB(x) => write!(f, "DBError: {x}"),
             Self::CT(x) => write!(f, "CTApiError: {x}"),
+            Self::Salto(x) => write!(f, "SaltoApiError: {x}"),
         }
     }
 }
@@ -78,6 +68,11 @@ impl From<DBError> for GatherError {
 impl From<CTApiError> for GatherError {
     fn from(value: CTApiError) -> Self {
         Self::CT(value)
+    }
+}
+impl From<SaltoApiError> for GatherError {
+    fn from(value: SaltoApiError) -> Self {
+        Self::Salto(value)
     }
 }
 
@@ -135,7 +130,6 @@ async fn signal_handler(
                 }
                 Err(err) => {
                     error!("Unable to listen for shutdown signal: {}", err);
-                    // we also shut down in case of error
                     shutdown_tx.send_replace(InShutdown::Yes);
                 }
             }
@@ -148,11 +142,13 @@ async fn signal_handler(
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = Arc::new(config::Config::create().await?);
-    // Setup tracing
 
-    let my_crate_filter = EnvFilter::new("ct_ta_sync");
+    // Setup tracing
+    let my_crate_filter = EnvFilter::new("salto_sync");
     let level_filter = filter::LevelFilter::from_str(&config.global.log_level)?;
-    let subscriber = tracing_subscriber::registry().with(my_crate_filter).with(
+    let subscriber = tracing_subscriber::registry()
+        .with(my_crate_filter)
+        .with(
         tracing_subscriber::fmt::layer()
             .compact()
             .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
@@ -160,30 +156,22 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_filter(level_filter),
     );
     tracing::subscriber::set_global_default(subscriber).expect("static tracing config");
+    tracing::info!("Starting CT -> Salto sync. Got Config, logged in to Salto, and set up tracing.");
 
-    // migrate the database
     sqlx::migrate!().run(&config.db).await?;
 
-    // the external temperature
     // cancellation channel
     let (tx, rx) = tokio::sync::watch::channel(InShutdown::No);
 
     let bookings_handle = tokio::spawn(pull_bookings::keep_bookings_up_to_date(config.clone(), rx));
 
-    let write_handle = tokio::spawn(write_staging::keep_staging_table_up_to_date(
-        config.clone(),
-        tx.subscribe(),
-        tx.clone(),
-    ));
-
     // start the Signal handler
     let signal_handle = tokio::spawn(signal_handler(tx.subscribe(), tx.clone()));
 
     // Join both tasks
-    let (bookings_res, write_res, signal_res) =
-        tokio::join!(bookings_handle, write_handle, signal_handle);
+    let (bookings_res, signal_res) =
+        tokio::join!(bookings_handle, signal_handle);
     bookings_res?;
-    write_res?;
     signal_res??;
 
     Ok(())

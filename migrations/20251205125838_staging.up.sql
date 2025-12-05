@@ -1,0 +1,10 @@
+CREATE TABLE salto_staging (
+	id INTEGER PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+	ExtID TEXT UNIQUE NOT NULL,
+	ExtZoneIDList TEXT NOT NULL,
+	Action INTEGER NOT NULL DEFAULT 2,
+	KontrollfeldSalto INTEGER NOT NULL DEFAULT 0,
+	KontrollfeldProcessed TEXT,
+	KontrollfeldError INTEGER,
+	KontrollfeldMessage TEXT
+);

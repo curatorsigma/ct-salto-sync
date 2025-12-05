@@ -172,6 +172,7 @@ pub async fn get_appointment(
     day: &str,
 ) -> Result<Timeframe, CTApiError> {
     let response = match config
+        .ct
         .client
         .get(format!(
             "https://{}/api/calendars/{}/appointments/{}",
@@ -180,25 +181,22 @@ pub async fn get_appointment(
         .send()
         .await
     {
-        Ok(x) => {
-            let text_res = x.text().await;
-            match text_res {
-                Ok(text) => {
-                    let deser_res: Result<CTAppointmentResponse, _> = serde_json::from_str(&text);
-                    if let Ok(y) = deser_res {
-                        y
-                    } else {
-                        warn!("There was an error parsing the return value from CT.");
-                        warn!("The complete text received was: {text}");
-                        return Err(CTApiError::Deserialize);
-                    }
-                }
-                Err(e) => {
-                    warn!("There was an error reading the response from CT as utf-8: {e}");
-                    return Err(CTApiError::Utf8Decode);
+        Ok(x) => match x.text().await {
+            Ok(text) => {
+                let deser_res: Result<CTAppointmentResponse, _> = serde_json::from_str(&text);
+                if let Ok(y) = deser_res {
+                    y
+                } else {
+                    warn!("There was an error parsing the return value from CT.");
+                    warn!("The complete text received was: {text}");
+                    return Err(CTApiError::Deserialize);
                 }
             }
-        }
+            Err(e) => {
+                warn!("There was an error reading the response from CT as utf-8: {e}");
+                return Err(CTApiError::Utf8Decode);
+            }
+        },
         Err(e) => {
             warn!("There was a problem getting a response from CT");
             return Err(CTApiError::GetAppointments(e));
@@ -260,6 +258,7 @@ async fn get_transponder_ids_in_group(
         page += 1;
         query_strings[0].1 = page.to_string();
         let response = match config
+            .ct
             .client
             .get(format!(
                 "https://{}/api/groups/{}/members",
@@ -269,27 +268,23 @@ async fn get_transponder_ids_in_group(
             .send()
             .await
         {
-            Ok(x) => {
-                let text_res = x.text().await;
-                match text_res {
-                    Ok(text) => {
-                        let deser_res: Result<CtGroupMemberResponse, _> =
-                            serde_json::from_str(&text);
-                        match deser_res {
-                            Ok(y) => y,
-                            Err(e) => {
-                                warn!("There was an error parsing the return value from CT: {e}");
-                                warn!("The complete text received was: {text}");
-                                return Err(CTApiError::Deserialize);
-                            }
+            Ok(x) => match x.text().await {
+                Ok(text) => {
+                    let deser_res: Result<CtGroupMemberResponse, _> = serde_json::from_str(&text);
+                    match deser_res {
+                        Ok(y) => y,
+                        Err(e) => {
+                            warn!("There was an error parsing the return value from CT: {e}");
+                            warn!("The complete text received was: {text}");
+                            return Err(CTApiError::Deserialize);
                         }
                     }
-                    Err(e) => {
-                        warn!("There was an error reading the response from CT as utf-8: {e}");
-                        return Err(CTApiError::Utf8Decode);
-                    }
                 }
-            }
+                Err(e) => {
+                    warn!("There was an error reading the response from CT as utf-8: {e}");
+                    return Err(CTApiError::Utf8Decode);
+                }
+            },
             Err(e) => {
                 warn!("There was a problem getting a response from CT");
                 return Err(CTApiError::GetGroupMembers(e));
@@ -333,6 +328,7 @@ async fn get_transponder_id_of_user(
     created_by: i64,
 ) -> Result<Option<i64>, CTApiError> {
     match config
+        .ct
         .client
         .get(format!(
             "https://{}/api/persons/{}",
@@ -341,26 +337,23 @@ async fn get_transponder_id_of_user(
         .send()
         .await
     {
-        Ok(x) => {
-            let text_res = x.text().await;
-            match text_res {
-                Ok(text) => {
-                    let deser_res: Result<CtGetPersonResponse, _> = serde_json::from_str(&text);
-                    match deser_res {
-                        Ok(y) => Ok(y.data.transponder_id),
-                        Err(e) => {
-                            warn!("There was an error parsing the return value from CT: {e}");
-                            warn!("The complete text received was: {text}");
-                            return Err(CTApiError::Deserialize);
-                        }
+        Ok(x) => match x.text().await {
+            Ok(text) => {
+                let deser_res: Result<CtGetPersonResponse, _> = serde_json::from_str(&text);
+                match deser_res {
+                    Ok(y) => Ok(y.data.transponder_id),
+                    Err(e) => {
+                        warn!("There was an error parsing the return value from CT: {e}");
+                        warn!("The complete text received was: {text}");
+                        return Err(CTApiError::Deserialize);
                     }
                 }
-                Err(e) => {
-                    warn!("There was an error reading the response from CT as utf-8: {e}");
-                    return Err(CTApiError::Utf8Decode);
-                }
             }
-        }
+            Err(e) => {
+                warn!("There was an error reading the response from CT as utf-8: {e}");
+                return Err(CTApiError::Utf8Decode);
+            }
+        },
         Err(e) => {
             warn!("There was a problem getting a response from CT");
             return Err(CTApiError::GetGroupMembers(e));
@@ -411,31 +404,29 @@ pub async fn get_relevant_bookings(config: &Config) -> Result<Vec<Booking>, CTAp
     query_strings.push(("status_ids[]", "1".to_owned()));
     query_strings.push(("status_ids[]", "2".to_owned()));
     let response = match config
+        .ct
         .client
         .get(format!("https://{}/api/bookings", config.ct.host))
         .query(&query_strings)
         .send()
         .await
     {
-        Ok(x) => {
-            let text_res = x.text().await;
-            match text_res {
-                Ok(text) => {
-                    let deser_res: Result<CTBookingsResponse, _> = serde_json::from_str(&text);
-                    if let Ok(y) = deser_res {
-                        y
-                    } else {
-                        warn!("There was an error parsing the return value from CT.");
-                        warn!("The complete text received was: {text}");
-                        return Err(CTApiError::Deserialize);
-                    }
-                }
-                Err(e) => {
-                    warn!("There was an error reading the response from CT as utf-8: {e}");
-                    return Err(CTApiError::Utf8Decode);
+        Ok(x) => match x.text().await {
+            Ok(text) => {
+                let deser_res: Result<CTBookingsResponse, _> = serde_json::from_str(&text);
+                if let Ok(y) = deser_res {
+                    y
+                } else {
+                    warn!("There was an error parsing the return value from CT.");
+                    warn!("The complete text received was: {text}");
+                    return Err(CTApiError::Deserialize);
                 }
             }
-        }
+            Err(e) => {
+                warn!("There was an error reading the response from CT as utf-8: {e}");
+                return Err(CTApiError::Utf8Decode);
+            }
+        },
         Err(e) => {
             warn!("There was a problem getting a response from CT");
             return Err(CTApiError::GetBookings(e));

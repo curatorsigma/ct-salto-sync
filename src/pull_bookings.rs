@@ -3,20 +3,24 @@
 use std::{collections::HashMap, sync::Arc};
 
 use chrono::{DateTime, Utc};
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 
 use crate::{
-    config::Config, ct::get_relevant_bookings, salto::{get_ext_ids_by_transponder, SaltoApiError}, Booking, GatherError, InShutdown
+    Booking, GatherError, InShutdown,
+    config::Config,
+    ct::get_relevant_bookings,
+    db::overwrite_staging_table_with,
+    salto::{SaltoApiError, get_ext_ids_by_transponder},
 };
 
 /// The data we want salto to write into their system in their format.
-struct StagingEntry {
-    ext_user_id: String,
+pub struct StagingEntry {
+    pub ext_user_id: String,
     // format is
     // {{"2014F70541B7A6C0C90008DD1AB1BAB0",0,2025-11-24T13:00:00,2025-11-24T17:20:59}, ...}
     // {{"zone-ext-id",0,start,end}} where start and end are given in "RFC3339", but are
     // interpreted as local time and not as UTC
-    ext_zone_id_list: String,
+    pub ext_zone_id_list: String,
 }
 
 // other random shit to add so salto works:
@@ -42,7 +46,7 @@ fn salto_single_permitted_zone_format(
 /// Translates transponder ids into ExtIds, "transposes" the structure, and formats the zones and
 /// times into saltos format.
 async fn convert_to_staging_entries(
-    config: &Config,
+    config: Arc<Config>,
     bookings: Vec<Booking>,
 ) -> Result<Vec<StagingEntry>, SaltoApiError> {
     let mut ext_zone_id_list_by_transponder = HashMap::<i64, String>::new();
@@ -82,8 +86,10 @@ async fn convert_to_staging_entries(
         zone.push('}');
     }
 
+    trace!("now getting ext ids");
     let person_ext_ids_by_transponder =
         get_ext_ids_by_transponder(config, ext_zone_id_list_by_transponder.keys()).await?;
+    trace!("got ext ids");
     Ok(person_ext_ids_by_transponder
         .into_iter()
         .filter_map(|(transponder, ext_id_opt)| {
@@ -99,12 +105,14 @@ async fn convert_to_staging_entries(
         .collect::<Vec<_>>())
 }
 
-async fn sync_once(config: &Config) -> Result<(), GatherError> {
-    let bookings = get_relevant_bookings(config).await?;
-
-    let staging_entries = convert_to_staging_entries(config, bookings);
-
-    // now write these bookings into the sync staging table
+/// A single run of the sync - get bookings from CT and write them to the staging table.
+async fn sync_once(config: Arc<Config>) -> Result<(), GatherError> {
+    let bookings = get_relevant_bookings(&config).await?;
+    let staging_entries = convert_to_staging_entries(config.clone(), bookings).await?;
+    info!("got staging entries");
+    info!("total of {} entries", staging_entries.len());
+    overwrite_staging_table_with(&config.db, staging_entries).await?;
+    info!("Overwrote staging table with new data.");
     Ok(())
 }
 
@@ -121,7 +129,7 @@ pub async fn keep_bookings_up_to_date(
 
     loop {
         debug!("Now syncing from CT.");
-        match sync_once(&config).await {
+        match sync_once(config.clone()).await {
             Ok(()) => {}
             Err(e) => {
                 warn!("Failed to sync CT -> Staging Table: {e}")
