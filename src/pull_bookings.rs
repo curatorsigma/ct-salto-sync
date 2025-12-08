@@ -29,14 +29,9 @@ pub struct StagingEntry {
 
 fn salto_single_permitted_zone_format(
     zone_ext_id: &str,
-    start: DateTime<Utc>,
-    end: DateTime<Utc>,
 ) -> String {
-    let time_format = chrono::format::StrftimeItems::new("%Y-%m-%dT%H:%M:%S");
     format!(
-        "{{\"{zone_ext_id}\",0,{},{}}}",
-        start.naive_local().format_with_items(time_format.clone()),
-        end.naive_local().format_with_items(time_format)
+        "{zone_ext_id}"
     )
 }
 
@@ -68,8 +63,6 @@ async fn convert_to_staging_entries(
         };
         let additional_zone = salto_single_permitted_zone_format(
             zone_ext_id,
-            booking.start_time - config.global.prehold_time,
-            booking.end_time + config.global.posthold_time,
         );
         for transponder in booking.permitted_transponders {
             ext_zone_id_list_by_transponder

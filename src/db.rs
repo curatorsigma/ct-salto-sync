@@ -11,7 +11,7 @@ pub enum DBError {
     CommitTransaction(sqlx::Error),
     UpsertStaging(sqlx::Error),
     GetEntries(sqlx::Error),
-    DeleteEntry(sqlx::Error),
+    RemoveEntry(sqlx::Error),
 }
 impl std::fmt::Display for DBError {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -28,8 +28,8 @@ impl std::fmt::Display for DBError {
             Self::GetEntries(e) => {
                 write!(f, "Cannot get staging entries: {e}")
             }
-            Self::DeleteEntry(e) => {
-                write!(f, "Cannot delete staging entrie: {e}")
+            Self::RemoveEntry(e) => {
+                write!(f, "Cannot remove staging entry: {e}")
             }
         }
     }
@@ -44,7 +44,12 @@ async fn upsert_staging_entry(
         "INSERT INTO salto_staging (ExtID, ExtZoneIDList)
             VALUES ($1, $2)
             ON CONFLICT (ExtID) DO
-                UPDATE SET ExtZoneIDList = $2;",
+                UPDATE SET
+                    ExtZoneIDList = $2,
+                    ToBeProcessedBySalto = 1,
+                    ProcessedDateTime = NULL,
+                    ErrorCode = NULL,
+                    ErrorMessage = NULL;",
         entry.ext_user_id,
         entry.ext_zone_id_list
     )
@@ -65,15 +70,15 @@ async fn get_existing_entries_by_extid(
         .map(|record| record.extid))
 }
 
-async fn delete_entry_by_extid(
+async fn remove_entry_by_extid(
     tx: &mut Transaction<'_, Postgres>,
     ext_id: &str,
 ) -> Result<(), DBError> {
-    sqlx::query!("DELETE FROM salto_staging WHERE ExtID = $1;", ext_id)
+    sqlx::query!("UPDATE salto_staging SET ExtZoneIDList = '' WHERE ExtID = $1;", ext_id)
         .execute(&mut **tx)
         .await
         .map(|_x| ())
-        .map_err(DBError::DeleteEntry)
+        .map_err(DBError::RemoveEntry)
 }
 
 /// Ensures that the staging table contains exactly these entries
@@ -92,7 +97,7 @@ pub async fn overwrite_staging_table_with(
                 .all(|new_entry| new_entry.ext_user_id != *existing_ext_id)
         });
     for entry in existing_outdated_entries {
-        delete_entry_by_extid(&mut tx, &entry).await?;
+        remove_entry_by_extid(&mut tx, &entry).await?;
     }
 
     for entry in entries {

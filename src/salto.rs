@@ -386,12 +386,15 @@ pub async fn get_ext_ids_by_transponder<'a, I: Iterator<Item = &'a i64>>(
         .map(|transponder| (*transponder, None))
         .collect();
     let mut users = SaltoUserStream::new(config).into_stream();
+    trace!("Created stream");
     while let Some(user_res) = users.next().await {
+        trace!("Got new user from stream");
         match user_res {
             Err(SaltoApiError::DeserializeDirect(e)) => {
                 trace!("Failed to deserialize user object completely. Skipping this user: {e}.");
             }
             Ok(user) => {
+                trace!("User with transponder {} is ok - modifying it in the hashtable.", user.transponder_id);
                 res.entry(user.transponder_id)
                     .and_modify(|value| *value = Some(user.ext_id));
             }
@@ -401,5 +404,6 @@ pub async fn get_ext_ids_by_transponder<'a, I: Iterator<Item = &'a i64>>(
             }
         }
     }
+    tracing::debug!("done iterating over users");
     Ok(res)
 }

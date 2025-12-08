@@ -158,7 +158,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::subscriber::set_global_default(subscriber).expect("static tracing config");
     tracing::info!("Starting CT -> Salto sync. Got Config, logged in to Salto, and set up tracing.");
 
-    sqlx::migrate!().run(&config.db).await?;
+    match sqlx::migrate!().run(&config.db).await {
+        Ok(()) => {
+            tracing::debug!("Migrated DB successfully.");
+            Ok(())
+        }
+        Err(e) => {
+            tracing::error!("Error while migrating database: {e}. Aborting.");
+            Err(e)
+        }
+    }?;
 
     // cancellation channel
     let (tx, rx) = tokio::sync::watch::channel(InShutdown::No);
