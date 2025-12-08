@@ -29,9 +29,18 @@ pub struct StagingEntry {
 
 fn salto_single_permitted_zone_format(
     zone_ext_id: &str,
+    timetable_id: u16,
+    start_time: DateTime<Utc>,
+    end_time: DateTime<Utc>,
 ) -> String {
+    let time_format = chrono::format::StrftimeItems::new("%Y-%m-%dT%H:%M:%S");
     format!(
-        "{zone_ext_id}"
+        "{{\"{zone_ext_id}\",{},{},{}}}",
+        timetable_id,
+        start_time.with_timezone(&chrono::Local)
+            .format_with_items(time_format.clone()),
+        end_time.with_timezone(&chrono::Local)
+            .format_with_items(time_format.clone()),
     )
 }
 
@@ -47,8 +56,14 @@ async fn convert_to_staging_entries(
     let mut ext_zone_id_list_by_transponder = HashMap::<i64, String>::new();
     let now = chrono::Utc::now();
     for booking in bookings {
-        // the posthold time has already ended - this booking can be ignored
-        if now > booking.end_time + config.global.posthold_time {
+        // the posthold time has already ended or the prehold time will start in more then
+        // sync_frequency seconds - ignore this booking
+        if now > booking.end_time + config.global.posthold_time
+            || now
+                < booking.start_time
+                    - config.global.prehold_time
+                    - chrono::TimeDelta::seconds(config.global.sync_frequency.into())
+        {
             continue;
         }
         let zone_ext_id = match config.room_ext_id(booking.resource_id) {
@@ -61,9 +76,8 @@ async fn convert_to_staging_entries(
                 continue;
             }
         };
-        let additional_zone = salto_single_permitted_zone_format(
-            zone_ext_id,
-        );
+        let additional_zone =
+            salto_single_permitted_zone_format(zone_ext_id, config.salto.timetable_id, booking.start_time, booking.end_time);
         for transponder in booking.permitted_transponders {
             ext_zone_id_list_by_transponder
                 .entry(transponder)
@@ -71,12 +85,8 @@ async fn convert_to_staging_entries(
                     l.push(',');
                     l.push_str(&additional_zone);
                 })
-                .or_insert(format!("{{{additional_zone}"));
+                .or_insert(format!("{additional_zone}"));
         }
-    }
-
-    for zone in ext_zone_id_list_by_transponder.values_mut() {
-        zone.push('}');
     }
 
     trace!("now getting ext ids");

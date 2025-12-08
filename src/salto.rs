@@ -14,7 +14,7 @@ use rand::RngCore;
 use reqwest::header;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tracing::{info, trace, warn};
+use tracing::{trace, warn};
 
 use crate::config::{Config, SaltoConfigData};
 
@@ -59,7 +59,10 @@ impl core::fmt::Display for SaltoApiError {
                 write!(f, "Unable to get users from Salto: {e}.")
             }
             Self::ClientBuilder(e) => {
-                write!(f, "Unable to create initial client for oauth login to salto: {e}.")
+                write!(
+                    f,
+                    "Unable to create initial client for oauth login to salto: {e}."
+                )
             }
         }
     }
@@ -70,13 +73,14 @@ impl core::error::Error for SaltoApiError {}
 struct SaltoUser {
     #[serde(rename = "ExtId")]
     ext_id: String,
-    #[serde(rename = "Title", deserialize_with = "deserialize_transponder_id_from_title")]
+    #[serde(
+        rename = "Title",
+        deserialize_with = "deserialize_transponder_id_from_title"
+    )]
     transponder_id: i64,
 }
 
-fn deserialize_transponder_id_from_title<'de, D>(
-    deserializer: D,
-) -> Result<i64, D::Error>
+fn deserialize_transponder_id_from_title<'de, D>(deserializer: D) -> Result<i64, D::Error>
 where
     D: serde::de::Deserializer<'de>,
 {
@@ -191,16 +195,6 @@ pub async fn create_client(config: &SaltoConfigData) -> Result<reqwest::Client, 
         .map_err(SaltoApiError::CannotCreateClient)
 }
 
-#[derive(Debug, Deserialize)]
-struct GetUserListStartingFromItemResponse {
-    /// The users ExtId
-    #[serde(rename = "ExtId")]
-    ext_id: String,
-    /// Contains the users transponder id, as a string, potentially with zeros prefixed
-    #[serde(rename = "Title")]
-    title: String,
-}
-
 /// Names are hard.
 ///
 /// The Form data we need to pass to get the next page of users from Saltos api.
@@ -232,7 +226,7 @@ impl SaltoGetUserListStartingFromItemRequestData {
             max_count: 21,
             return_relations: SaltoGetUserListStartingFromItemRequestDataReturnRelations::default(),
             filter_criteria: "".to_string(),
-            is_forward: false,
+            is_forward: true,
         }
     }
 }
@@ -386,15 +380,16 @@ pub async fn get_ext_ids_by_transponder<'a, I: Iterator<Item = &'a i64>>(
         .map(|transponder| (*transponder, None))
         .collect();
     let mut users = SaltoUserStream::new(config).into_stream();
-    trace!("Created stream");
     while let Some(user_res) = users.next().await {
-        trace!("Got new user from stream");
         match user_res {
             Err(SaltoApiError::DeserializeDirect(e)) => {
-                trace!("Failed to deserialize user object completely. Skipping this user: {e}.");
+                trace!("Failed to deserialize user object completely. Skipping a user: {e}.");
             }
             Ok(user) => {
-                trace!("User with transponder {} is ok - modifying it in the hashtable.", user.transponder_id);
+                trace!(
+                    "User with transponder {} is ok - modifying it in the hashtable.",
+                    user.transponder_id
+                );
                 res.entry(user.transponder_id)
                     .and_modify(|value| *value = Some(user.ext_id));
             }
@@ -404,6 +399,5 @@ pub async fn get_ext_ids_by_transponder<'a, I: Iterator<Item = &'a i64>>(
             }
         }
     }
-    tracing::debug!("done iterating over users");
     Ok(res)
 }

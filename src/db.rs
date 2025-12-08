@@ -1,6 +1,5 @@
 //! All the db-related functions
 
-use futures::TryFutureExt;
 use sqlx::{PgPool, Postgres, Transaction};
 
 use crate::pull_bookings::StagingEntry;
@@ -74,11 +73,14 @@ async fn remove_entry_by_extid(
     tx: &mut Transaction<'_, Postgres>,
     ext_id: &str,
 ) -> Result<(), DBError> {
-    sqlx::query!("UPDATE salto_staging SET ExtZoneIDList = '' WHERE ExtID = $1;", ext_id)
-        .execute(&mut **tx)
-        .await
-        .map(|_x| ())
-        .map_err(DBError::RemoveEntry)
+    sqlx::query!(
+        "UPDATE salto_staging SET ExtZoneIDList = '' WHERE ExtID = $1;",
+        ext_id
+    )
+    .execute(&mut **tx)
+    .await
+    .map(|_x| ())
+    .map_err(DBError::RemoveEntry)
 }
 
 /// Ensures that the staging table contains exactly these entries

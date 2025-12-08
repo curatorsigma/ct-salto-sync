@@ -41,6 +41,8 @@ pub(crate) struct SaltoConfigData {
     pub base_url: String,
     pub username: String,
     pub password: String,
+    #[serde(default = "u16::default")]
+    pub timetable_id: u16,
 }
 impl core::fmt::Debug for SaltoConfigData {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
@@ -55,6 +57,7 @@ impl core::fmt::Debug for SaltoConfigData {
 pub(crate) struct SaltoConfig {
     pub base_url: String,
     pub client: reqwest::Client,
+    pub timetable_id: u16,
 }
 
 #[derive(Debug)]
@@ -87,6 +90,7 @@ impl Config {
             salto: SaltoConfig {
                 base_url: cd.salto.base_url,
                 client: salto_client,
+                timetable_id: cd.salto.timetable_id,
             },
             ct: ChurchToolsConfig {
                 host: cd.ct.host,

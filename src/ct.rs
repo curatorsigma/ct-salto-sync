@@ -251,6 +251,7 @@ async fn get_transponder_ids_in_group(
     let mut page = 0;
     let mut query_strings = [
         ("page", page.to_string()),
+        // large limit to usually only make one request
         ("limit", "100".to_owned()),
         ("personFields[]", "transponderId".to_owned()),
     ];
@@ -367,6 +368,7 @@ async fn get_permitted_transponders(
     groups: &[i64],
 ) -> Result<Vec<i64>, CTApiError> {
     let mut transponders = get_transponder_ids_in_groups(config, groups).await?;
+    tracing::debug!("transponder ids from groupids {groups:?}: {:?}", transponders);
     if let Some(creator_transponder_id) = get_transponder_id_of_user(config, created_by).await? {
         transponders.push(creator_transponder_id);
     }

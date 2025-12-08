@@ -146,9 +146,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Setup tracing
     let my_crate_filter = EnvFilter::new("salto_sync");
     let level_filter = filter::LevelFilter::from_str(&config.global.log_level)?;
-    let subscriber = tracing_subscriber::registry()
-        .with(my_crate_filter)
-        .with(
+    let subscriber = tracing_subscriber::registry().with(my_crate_filter).with(
         tracing_subscriber::fmt::layer()
             .compact()
             .with_span_events(FmtSpan::NEW | FmtSpan::CLOSE)
@@ -156,7 +154,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .with_filter(level_filter),
     );
     tracing::subscriber::set_global_default(subscriber).expect("static tracing config");
-    tracing::info!("Starting CT -> Salto sync. Got Config, logged in to Salto, and set up tracing.");
+    tracing::info!(
+        "Starting CT -> Salto sync. Got Config, logged in to Salto, and set up tracing."
+    );
 
     match sqlx::migrate!().run(&config.db).await {
         Ok(()) => {
@@ -178,8 +178,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let signal_handle = tokio::spawn(signal_handler(tx.subscribe(), tx.clone()));
 
     // Join both tasks
-    let (bookings_res, signal_res) =
-        tokio::join!(bookings_handle, signal_handle);
+    let (bookings_res, signal_res) = tokio::join!(bookings_handle, signal_handle);
     bookings_res?;
     signal_res??;
 
