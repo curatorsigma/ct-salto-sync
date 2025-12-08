@@ -1,0 +1,15 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "INSERT INTO salto_staging (ExtID, ExtZoneIDList)\n            VALUES ($1, $2)\n            ON CONFLICT (ExtID) DO\n                UPDATE SET\n                    ExtZoneIDList = $2,\n                    ToBeProcessedBySalto = 1,\n                    ProcessedDateTime = NULL,\n                    ErrorCode = NULL,\n                    ErrorMessage = NULL;",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text",
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "f16d78dd3660e2992e392868f3823eada13274e6d67f768f28378e0a04a2621a"
+}

@@ -1,0 +1,20 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "SELECT ExtID FROM salto_staging;",
+  "describe": {
+    "columns": [
+      {
+        "ordinal": 0,
+        "name": "extid",
+        "type_info": "Text"
+      }
+    ],
+    "parameters": {
+      "Left": []
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "cb0bf6d14a48045e6ee44c33696da4732c3c63573dd85b39ffb1ef2934d4b172"
+}
