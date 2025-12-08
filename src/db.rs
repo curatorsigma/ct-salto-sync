@@ -12,8 +12,8 @@ pub enum DBError {
     GetEntries(sqlx::Error),
     RemoveEntry(sqlx::Error),
 }
-impl std::fmt::Display for DBError {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+impl core::fmt::Display for DBError {
+    fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         match self {
             Self::StartTransaction(e) => {
                 write!(f, "Cannot start transaction: {e}")
@@ -33,7 +33,7 @@ impl std::fmt::Display for DBError {
         }
     }
 }
-impl std::error::Error for DBError {}
+impl core::error::Error for DBError {}
 
 async fn upsert_staging_entry(
     tx: &mut Transaction<'_, Postgres>,
@@ -90,14 +90,14 @@ pub async fn overwrite_staging_table_with(
 ) -> Result<(), DBError> {
     let mut tx = pool.begin().await.map_err(DBError::StartTransaction)?;
 
-    let existing_outdated_entries = get_existing_entries_by_extid(&mut tx)
-        .await?
-        .into_iter()
-        .filter(|existing_ext_id| {
-            entries
-                .iter()
-                .all(|new_entry| new_entry.ext_user_id != *existing_ext_id)
-        });
+    let existing_outdated_entries =
+        get_existing_entries_by_extid(&mut tx)
+            .await?
+            .filter(|existing_ext_id| {
+                entries
+                    .iter()
+                    .all(|new_entry| new_entry.ext_user_id != *existing_ext_id)
+            });
     for entry in existing_outdated_entries {
         remove_entry_by_extid(&mut tx, &entry).await?;
     }

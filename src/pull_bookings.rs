@@ -37,9 +37,11 @@ fn salto_single_permitted_zone_format(
     format!(
         "{{\"{zone_ext_id}\",{},{},{}}}",
         timetable_id,
-        start_time.with_timezone(&chrono::Local)
+        start_time
+            .with_timezone(&chrono::Local)
             .format_with_items(time_format.clone()),
-        end_time.with_timezone(&chrono::Local)
+        end_time
+            .with_timezone(&chrono::Local)
             .format_with_items(time_format.clone()),
     )
 }
@@ -47,7 +49,7 @@ fn salto_single_permitted_zone_format(
 /// Convert the Vec of bookings into a Vec of entries, one for each user, containing the zones that
 /// user should get access to across all the bookings.
 ///
-/// Translates transponder ids into ExtIds, "transposes" the structure, and formats the zones and
+/// Translates transponder ids into `ExtIds`, "transposes" the structure, and formats the zones and
 /// times into saltos format.
 async fn convert_to_staging_entries(
     config: Arc<Config>,
@@ -66,18 +68,19 @@ async fn convert_to_staging_entries(
         {
             continue;
         }
-        let zone_ext_id = match config.room_ext_id(booking.resource_id) {
-            Some(x) => x,
-            None => {
-                warn!(
-                    "Got booking for room {}, but could not find its salto ExtId.",
-                    booking.resource_id
-                );
-                continue;
-            }
+        let Some(zone_ext_id) = config.room_ext_id(booking.resource_id) else {
+            warn!(
+                "Got booking for room {}, but could not find its salto ExtId.",
+                booking.resource_id
+            );
+            continue;
         };
-        let additional_zone =
-            salto_single_permitted_zone_format(zone_ext_id, config.salto.timetable_id, booking.start_time, booking.end_time);
+        let additional_zone = salto_single_permitted_zone_format(
+            zone_ext_id,
+            config.salto.timetable_id,
+            booking.start_time,
+            booking.end_time,
+        );
         for transponder in booking.permitted_transponders {
             ext_zone_id_list_by_transponder
                 .entry(transponder)
@@ -85,7 +88,7 @@ async fn convert_to_staging_entries(
                     l.push(',');
                     l.push_str(&additional_zone);
                 })
-                .or_insert(format!("{additional_zone}"));
+                .or_insert(additional_zone.to_string());
         }
     }
 
@@ -135,7 +138,7 @@ pub async fn keep_bookings_up_to_date(
         match sync_once(config.clone()).await {
             Ok(()) => {}
             Err(e) => {
-                warn!("Failed to sync CT -> Staging Table: {e}")
+                warn!("Failed to sync CT -> Staging Table: {e}");
             }
         }
 

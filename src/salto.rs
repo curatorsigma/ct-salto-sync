@@ -2,11 +2,12 @@
 //!
 //! NOTES:
 //! 1. This API is completely undocumented and I reverse engineered it. However, I do not know of
-//!    any other way to get the ExtId for a User, so I had to do this.
+//!    any other way to get the `ExtId` for a User, so I had to do this.
 //! 2. The actual handover of data into salto happens via the official staging table and is
-//!    implemented in [`crate::write_staging`].
+//!    implemented in [`crate::pull_bookings::sync_once`].
 
-use std::{collections::HashMap, pin::Pin, sync::Arc, task::Poll};
+use core::{pin::Pin, task::Poll};
+use std::{collections::HashMap, sync::Arc};
 
 use base64::{Engine, prelude::BASE64_STANDARD};
 use futures::{StreamExt, TryStreamExt};
@@ -126,7 +127,7 @@ fn salto_password_hash(password: &str) -> String {
 struct AuthorizationTokenResponse {
     access_token: String,
 }
-/// Log in to salto and return the access_token gotten from the Oauth endpoint
+/// Log in to salto and return the `access_token` gotten from the Oauth endpoint
 async fn salto_login(config: &SaltoConfigData) -> Result<String, SaltoApiError> {
     let mut form_data = HashMap::new();
     form_data.insert("grant_type", "password");
@@ -182,7 +183,7 @@ pub async fn create_client(config: &SaltoConfigData) -> Result<reqwest::Client, 
         header::HeaderValue::from_static("application/json"),
     );
     let access_token = salto_login(config).await?;
-    let mut auth_value = header::HeaderValue::from_str(&format!("Bearer {}", access_token))
+    let mut auth_value = header::HeaderValue::from_str(&format!("Bearer {access_token}"))
         .expect("statically good header");
     auth_value.set_sensitive(true);
     headers.insert(header::AUTHORIZATION, auth_value);
@@ -225,7 +226,7 @@ impl SaltoGetUserListStartingFromItemRequestData {
             order_by: 0,
             max_count: 21,
             return_relations: SaltoGetUserListStartingFromItemRequestDataReturnRelations::default(),
-            filter_criteria: "".to_string(),
+            filter_criteria: String::new(),
             is_forward: true,
         }
     }
@@ -282,6 +283,15 @@ async fn get_next_salto_user_page(
     }
 }
 
+/// The (pin-boxed) future to get the next page of users from Salto
+type PinnedNextUserRequest = Pin<
+    Box<
+        dyn futures::future::Future<
+                Output = Result<std::vec::IntoIter<serde_json::Value>, SaltoApiError>,
+            > + Send,
+    >,
+>;
+
 /// Streams all Salto Users from saltos RPC API.
 ///
 /// NOTE:
@@ -293,15 +303,7 @@ struct SaltoUserStream {
     last_page_full_last_entry: Option<serde_json::Value>,
     /// Users present on last page - will iterate these to the end before requesting the next page
     on_last_page: Box<dyn ExactSizeIterator<Item = Result<SaltoUser, SaltoApiError>> + Send>,
-    current_future: Option<
-        Pin<
-            Box<
-                dyn futures::future::Future<
-                        Output = Result<std::vec::IntoIter<serde_json::Value>, SaltoApiError>,
-                    > + Send,
-            >,
-        >,
-    >,
+    current_future: Option<PinnedNextUserRequest>,
 }
 impl SaltoUserStream {
     pub fn new(config: Arc<Config>) -> Self {
@@ -317,13 +319,13 @@ impl tokio_stream::Stream for SaltoUserStream {
     type Item = Result<SaltoUser, SaltoApiError>;
 
     fn poll_next(
-        mut self: std::pin::Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<Option<Self::Item>> {
+        mut self: core::pin::Pin<&mut Self>,
+        cx: &mut core::task::Context<'_>,
+    ) -> core::task::Poll<Option<Self::Item>> {
         // we still have data (sync)
         if let Some(next_user) = self.on_last_page.next() {
-            return std::task::Poll::Ready(Some(next_user));
-        };
+            return Poll::Ready(Some(next_user));
+        }
 
         // we have the next future already queued; keep polling it
         if self.current_future.is_none() {
@@ -332,12 +334,16 @@ impl tokio_stream::Stream for SaltoUserStream {
                 self.last_page_full_last_entry.clone(),
                 our_config,
             )));
-        };
+        }
 
-        match self.current_future.as_mut().unwrap().as_mut().poll(cx) {
-            Poll::Pending => {
-                return Poll::Pending;
-            }
+        match self
+            .current_future
+            .as_mut()
+            .expect("No control flow since Some was set")
+            .as_mut()
+            .poll(cx)
+        {
+            Poll::Pending => Poll::Pending,
             Poll::Ready(result) => {
                 self.current_future = None;
                 match result {
@@ -349,29 +355,27 @@ impl tokio_stream::Stream for SaltoUserStream {
                                     .map_err(SaltoApiError::DeserializeDirect)
                             }));
                             self.current_future = None;
-                            return Poll::Ready(Some(
+                            Poll::Ready(Some(
                                 self.on_last_page
                                     .next()
                                     .expect("checked that the next page contains entries"),
-                            ));
+                            ))
                         } else {
-                            return Poll::Ready(None);
+                            Poll::Ready(None)
                         }
                     }
-                    Err(e) => {
-                        return Poll::Ready(Some(Err(e)));
-                    }
+                    Err(e) => Poll::Ready(Some(Err(e))),
                 }
             }
         }
     }
 }
 
-/// Try to find the ExtId for each transponder
+/// Try to find the `ExtId` for each transponder
 ///
 /// # Errors
 /// Returns an Error when an API call fails.
-/// When no ExtId is found for a user, inserts None into the HashMap
+/// When no `ExtId` is found for a user, inserts `None` into the `HashMap`
 pub async fn get_ext_ids_by_transponder<'a, I: Iterator<Item = &'a i64>>(
     config: Arc<Config>,
     transponders: I,

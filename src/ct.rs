@@ -19,7 +19,7 @@ pub fn create_client(login_token: &str) -> Result<reqwest::Client, reqwest::Erro
         header::ACCEPT,
         header::HeaderValue::from_static("application/json"),
     );
-    let mut auth_value = header::HeaderValue::from_str(&format!("Login {}", login_token))
+    let mut auth_value = header::HeaderValue::from_str(&format!("Login {login_token}"))
         .expect("statically good header");
     auth_value.set_sensitive(true);
     headers.insert(header::AUTHORIZATION, auth_value);
@@ -49,7 +49,7 @@ impl core::fmt::Display for CTApiError {
                 write!(f, "Cannot get bookings. reqwest Error: {e}")
             }
             Self::GetGroupMembers(e) => {
-                write!(f, "Cannot get bookings. reqwest Error: {e}")
+                write!(f, "Cannot get group members. reqwest Error: {e}")
             }
             Self::GetAppointments(e) => {
                 write!(f, "Cannot get appointments. reqwest Error: {e}")
@@ -293,12 +293,12 @@ async fn get_transponder_ids_in_group(
         };
         if response.data.is_empty() {
             break;
-        };
+        }
         res.extend(
             response
                 .data
                 .into_iter()
-                .flat_map(|person| person.person_fields.transponder_id),
+                .filter_map(|person| person.person_fields.transponder_id),
         );
     }
     Ok(res)
@@ -346,18 +346,18 @@ async fn get_transponder_id_of_user(
                     Err(e) => {
                         warn!("There was an error parsing the return value from CT: {e}");
                         warn!("The complete text received was: {text}");
-                        return Err(CTApiError::Deserialize);
+                        Err(CTApiError::Deserialize)
                     }
                 }
             }
             Err(e) => {
                 warn!("There was an error reading the response from CT as utf-8: {e}");
-                return Err(CTApiError::Utf8Decode);
+                Err(CTApiError::Utf8Decode)
             }
         },
         Err(e) => {
             warn!("There was a problem getting a response from CT");
-            return Err(CTApiError::GetGroupMembers(e));
+            Err(CTApiError::GetGroupMembers(e))
         }
     }
 }
@@ -368,16 +368,17 @@ async fn get_permitted_transponders(
     groups: &[i64],
 ) -> Result<Vec<i64>, CTApiError> {
     let mut transponders = get_transponder_ids_in_groups(config, groups).await?;
-    tracing::debug!("transponder ids from groupids {groups:?}: {:?}", transponders);
+    tracing::debug!(
+        "transponder ids from groupids {groups:?}: {:?}",
+        transponders
+    );
     if let Some(creator_transponder_id) = get_transponder_id_of_user(config, created_by).await? {
         transponders.push(creator_transponder_id);
     }
     Ok(transponders)
 }
 
-/// Get all the relevant bookings from CT. This MAY include to many bookings (i.e. those whose
-/// prehold_time or posthold_time have not yet started/ have already ended)
-pub async fn get_relevant_bookings(config: &Config) -> Result<Vec<Booking>, CTApiError> {
+async fn get_raw_bookings(config: &Config) -> Result<CTBookingsResponse, CTApiError> {
     // we need to consider bookings from some time ago and some time in the future, because their prehold or posthold times
     // may overlap into today.
     let start_date = chrono::Utc::now().naive_utc() - config.global.posthold_time;
@@ -405,7 +406,7 @@ pub async fn get_relevant_bookings(config: &Config) -> Result<Vec<Booking>, CTAp
     // request ever being approved.
     query_strings.push(("status_ids[]", "1".to_owned()));
     query_strings.push(("status_ids[]", "2".to_owned()));
-    let response = match config
+    match config
         .ct
         .client
         .get(format!("https://{}/api/bookings", config.ct.host))
@@ -417,23 +418,30 @@ pub async fn get_relevant_bookings(config: &Config) -> Result<Vec<Booking>, CTAp
             Ok(text) => {
                 let deser_res: Result<CTBookingsResponse, _> = serde_json::from_str(&text);
                 if let Ok(y) = deser_res {
-                    y
+                    Ok(y)
                 } else {
                     warn!("There was an error parsing the return value from CT.");
                     warn!("The complete text received was: {text}");
-                    return Err(CTApiError::Deserialize);
+                    Err(CTApiError::Deserialize)
                 }
             }
             Err(e) => {
                 warn!("There was an error reading the response from CT as utf-8: {e}");
-                return Err(CTApiError::Utf8Decode);
+                Err(CTApiError::Utf8Decode)
             }
         },
         Err(e) => {
             warn!("There was a problem getting a response from CT");
-            return Err(CTApiError::GetBookings(e));
+            Err(CTApiError::GetBookings(e))
         }
-    };
+    }
+}
+
+/// Get all the relevant bookings from CT. This MAY include to many bookings (i.e. those whose
+/// `prehold_time` or `posthold_time` have not yet started/ have already ended)
+pub async fn get_relevant_bookings(config: &Config) -> Result<Vec<Booking>, CTApiError> {
+    let response = get_raw_bookings(config).await?;
+
     futures::future::join_all(response.data.into_iter().map(|x: BookingsData| async move {
         // potentially change the start/end date to those of a calendar appointment if this
         // resource bookings was created from a calendar appointment
@@ -465,7 +473,7 @@ pub async fn get_relevant_bookings(config: &Config) -> Result<Vec<Booking>, CTAp
             .map(|descr| groups_from_description(&descr, &config.ct.group_magic_prefix))
             .unwrap_or_default();
         let permitted_transponders =
-            get_permitted_transponders(&config, x.base.meta.created_person.id, &permitted_groups)
+            get_permitted_transponders(config, x.base.meta.created_person.id, &permitted_groups)
                 .await?;
 
         Ok::<Booking, CTApiError>(Booking {

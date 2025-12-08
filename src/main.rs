@@ -1,4 +1,6 @@
-use std::str::FromStr;
+//! Pulls bookings from CT, pushes the users allowed in those bookings to Salto.
+
+use core::str::FromStr;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -140,7 +142,7 @@ async fn signal_handler(
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn core::error::Error>> {
     let config = Arc::new(config::Config::create().await?);
 
     // Setup tracing

@@ -50,6 +50,7 @@ impl core::fmt::Debug for SaltoConfigData {
             .field("base_url", &self.base_url)
             .field("username", &self.username)
             .field("password", &"[redacted]")
+            .field("timetable_id", &self.timetable_id)
             .finish()
     }
 }
@@ -103,7 +104,7 @@ impl Config {
         })
     }
 
-    pub async fn create() -> Result<Config, Box<dyn std::error::Error>> {
+    pub async fn create() -> Result<Config, Box<dyn core::error::Error>> {
         let path = Path::new("/etc/salto-sync/config.yaml");
         let f = match File::open(path) {
             Ok(x) => x,
@@ -125,13 +126,12 @@ impl Config {
         Config::from_config_data(config_data).await
     }
 
-    /// Find the ExtId for this CT resource in the config
+    /// Find the `ExtId` for this CT resource in the config
     pub fn room_ext_id(&self, resource_id: i64) -> Option<&String> {
-        return self
-            .rooms
+        self.rooms
             .iter()
             .find(|room| room.ct_id == resource_id)
-            .map(|room| &room.salto_ext_id);
+            .map(|room| &room.salto_ext_id)
     }
 }
 
