@@ -74,7 +74,13 @@ async fn remove_entry_by_extid(
     ext_id: &str,
 ) -> Result<(), DBError> {
     sqlx::query!(
-        "UPDATE salto_staging SET ExtZoneIDList = '' WHERE ExtID = $1;",
+        "UPDATE salto_staging SET
+            ExtZoneIDList = '',
+            ToBeProcessedBySalto = 1,
+            ErrorMessage = NULL,
+            ErrorCode = NULL,
+            ProcessedDateTime = NULL
+         WHERE ExtID = $1;",
         ext_id
     )
     .execute(&mut **tx)
