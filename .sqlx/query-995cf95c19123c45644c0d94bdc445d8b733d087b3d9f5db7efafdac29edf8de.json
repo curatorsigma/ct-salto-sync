@@ -1,0 +1,14 @@
+{
+  "db_name": "PostgreSQL",
+  "query": "UPDATE salto_staging SET\n            ExtZoneIDList = '',\n            ToBeProcessedBySalto = 1,\n            ErrorMessage = NULL,\n            ErrorCode = NULL,\n            ProcessedDateTime = NULL\n         WHERE ExtID = $1;",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Left": [
+        "Text"
+      ]
+    },
+    "nullable": []
+  },
+  "hash": "995cf95c19123c45644c0d94bdc445d8b733d087b3d9f5db7efafdac29edf8de"
+}
