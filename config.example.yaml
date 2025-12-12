@@ -1,0 +1,45 @@
+global:
+  # how often to sync in s
+  sync_frequency: 300
+  # allow users this much grace-period BEFORE the booking (in min)
+  prehold_time: 90
+  # allow users this much grace-period AFTER the booking (in min)
+  posthold_time: 90
+  # show this level of logs
+  # TRACE, DEBUG, INFO, WARN, ERROR
+  log_level: "DEBUG"
+
+# config for reading from churchtools
+ct:
+  # hostname of the instance to pull from
+  host: "mychurch.church.tools"
+  login_token: "not-the-login-token"
+  # allow groups to gain access when this prefix plus the churchtools group id is part of the bookings note
+  # NOTE: needs to be space-separated from other notes
+  group_magic_prefix: "SALTO_ALLOW_"
+
+# config for reading from salto
+salto:
+  # default 0 - the timetable to set; could e.g. contain a useful name
+  timetable_id: 1024
+  # URI to make requests to
+  base_url: "https://salto.example.com:8100"
+  # username for an account that can view all users you want to sync
+  username: "admin"
+  # its password
+  password: "not-the-password"
+
+# Database to write entries to. Salto needs to read this database via ODBC. PostgreSQL.
+db:
+  host: "postgresql-host"
+  # OPTIONAL DEFAULT 5432
+  # port: 5432
+  username: "postgresql-user"
+  password: "not-the-password"
+  database: "database-name"
+
+rooms:
+# MyFancyRoom
+- ct_id: 1234
+  salto_ext_id: "not-the-salto-ext-id"
+
