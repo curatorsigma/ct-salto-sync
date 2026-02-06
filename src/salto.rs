@@ -21,7 +21,7 @@ use crate::config::{Config, SaltoConfigData};
 
 #[derive(Debug)]
 pub enum SaltoApiError {
-    Utf8Decode,
+    Utf8Decode(reqwest::Error),
     DeserializeDirect(serde_json::Error),
     DeserializeReqwest(reqwest::Error),
     NoResponse(reqwest::Error),
@@ -32,37 +32,34 @@ pub enum SaltoApiError {
 impl core::fmt::Display for SaltoApiError {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         match self {
-            Self::Utf8Decode => {
-                write!(f, "Unable to decode response body as utf-8.")
+            Self::Utf8Decode(e) => {
+                write!(f, "Unable to decode response body as utf-8: {e:?}.")
             }
             Self::DeserializeDirect(e) => {
                 write!(
                     f,
-                    "Unable to deserialize response as the expected struct: {e}."
+                    "Unable to deserialize response as the expected struct: {e:?}."
                 )
             }
             Self::DeserializeReqwest(e) => {
-                write!(
-                    f,
-                    "Unable to deserialize response as the expected struct: {e}."
-                )
+                write!(f, "Unable to deserialize response as json object: {e:?}.")
             }
             Self::NoResponse(e) => {
-                write!(f, "Did not get a postive response from salto: {e}.")
+                write!(f, "Did not get a postive response from salto: {e:?}.")
             }
             Self::CannotCreateClient(e) => {
                 write!(
                     f,
-                    "Unable to create a reqwest client for use with salto bearer auth: {e}."
+                    "Unable to create a reqwest client for use with salto bearer auth: {e:?}."
                 )
             }
             Self::CannotGetUsers(e) => {
-                write!(f, "Unable to get users from Salto: {e}.")
+                write!(f, "Unable to get users from Salto: {e:?}.")
             }
             Self::ClientBuilder(e) => {
                 write!(
                     f,
-                    "Unable to create initial client for oauth login to salto: {e}."
+                    "Unable to create initial client for oauth login to salto: {e:?}."
                 )
             }
         }
@@ -152,22 +149,10 @@ async fn salto_login(config: &SaltoConfigData) -> Result<String, SaltoApiError> 
             .await
         {
             Ok(x) => {
-                let text_res = x.text().await;
-                match text_res {
-                    Ok(text) => {
-                        let deser_res: Result<AuthorizationTokenResponse, _> =
-                            serde_json::from_str(&text);
-                        match deser_res {
-                            Ok(y) => y.access_token,
-                            Err(e) => {
-                                return Err(SaltoApiError::DeserializeDirect(e));
-                            }
-                        }
-                    }
-                    Err(_e) => {
-                        return Err(SaltoApiError::Utf8Decode);
-                    }
-                }
+                let text = x.text().await.map_err(SaltoApiError::Utf8Decode)?;
+                let y: AuthorizationTokenResponse =
+                    serde_json::from_str(&text).map_err(SaltoApiError::DeserializeDirect)?;
+                y.access_token
             }
             Err(e) => {
                 return Err(SaltoApiError::NoResponse(e));
