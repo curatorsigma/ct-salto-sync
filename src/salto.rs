@@ -28,6 +28,7 @@ pub enum SaltoApiError {
     CannotCreateClient(reqwest::Error),
     CannotGetUsers(reqwest::Error),
     ClientBuilder(reqwest::Error),
+    FormDataEncode(serde_urlencoded::ser::Error),
 }
 impl core::fmt::Display for SaltoApiError {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
@@ -61,6 +62,9 @@ impl core::fmt::Display for SaltoApiError {
                     f,
                     "Unable to create initial client for oauth login to salto: {e:?}."
                 )
+            }
+            Self::FormDataEncode(e) => {
+                write!(f, "Unable to encode form data: {e:?}")
             }
         }
     }
@@ -135,6 +139,10 @@ async fn salto_login(config: &SaltoConfigData) -> Result<String, SaltoApiError> 
     form_data.insert("username", &username_as_base64);
     let hash = salto_password_hash(&config.password);
     form_data.insert("password", &hash);
+    // we need to set the CONTENT_LENGTH, so we manually encode and send it in the header
+    // to prevent encoding twice when using `ReqwestBuilder::form()`
+    let url_encoded_form =
+        serde_urlencoded::to_string(&form_data).map_err(SaltoApiError::FormDataEncode)?;
     Ok(
         match reqwest::Client::builder()
             .danger_accept_invalid_certs(true)
@@ -142,9 +150,12 @@ async fn salto_login(config: &SaltoConfigData) -> Result<String, SaltoApiError> 
             .build()
             .map_err(SaltoApiError::ClientBuilder)?
             .post(format!("{}/oauth/connect/token", config.base_url))
-            .form(&form_data)
-            .query(&form_data)
-            .header(reqwest::header::CONTENT_LENGTH, 222)
+            .header(reqwest::header::CONTENT_LENGTH, url_encoded_form.len())
+            .header(
+                reqwest::header::CONTENT_TYPE,
+                "application/x-www-form-urlencoded",
+            )
+            .body(url_encoded_form)
             .send()
             .await
         {
