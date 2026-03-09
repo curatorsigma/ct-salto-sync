@@ -6,14 +6,17 @@
 //! 2. The actual handover of data into salto happens via the official staging table and is
 //!    implemented in [`crate::pull_bookings::sync_once`].
 
+#![allow(non_snake_case, unused)]
+
 use core::{pin::Pin, task::Poll};
 use std::{collections::HashMap, sync::Arc};
 
 use base64::{Engine, prelude::BASE64_STANDARD};
 use futures::{StreamExt, TryStreamExt};
 use rand::RngCore;
-use reqwest::header;
+use reqwest::{StatusCode, header};
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use tracing::{trace, warn};
 
@@ -26,10 +29,24 @@ pub enum SaltoApiError {
     DeserializeReqwest(reqwest::Error),
     NoResponse(reqwest::Error),
     CannotCreateClient(reqwest::Error),
-    CannotGetUsers(reqwest::Error),
     ClientBuilder(reqwest::Error),
     FormDataEncode(serde_urlencoded::ser::Error),
+    ConnectionError(reqwest::Error),
+    UnexpectedStatusCode(StatusCode),
+    UnsuccessfulApiResponse(String),
+    DeserializeJson(serde_json::Error),
 }
+
+#[derive(Debug, Deserialize)]
+struct SaltoErrorResponse {
+    #[serde(rename = "Message")]
+    message: String,
+    #[serde(rename = "HResult")]
+    h_result: i32,
+    #[serde(rename = "detail")]
+    detail: i32,
+}
+
 impl core::fmt::Display for SaltoApiError {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
         match self {
@@ -54,9 +71,6 @@ impl core::fmt::Display for SaltoApiError {
                     "Unable to create a reqwest client for use with salto bearer auth: {e:?}."
                 )
             }
-            Self::CannotGetUsers(e) => {
-                write!(f, "Unable to get users from Salto: {e:?}.")
-            }
             Self::ClientBuilder(e) => {
                 write!(
                     f,
@@ -65,6 +79,22 @@ impl core::fmt::Display for SaltoApiError {
             }
             Self::FormDataEncode(e) => {
                 write!(f, "Unable to encode form data: {e:?}")
+            }
+            Self::DeserializeJson(e) => {
+                write!(f, "Parsing json to object failed: {e:?}")
+            }
+            Self::ConnectionError(e) => {
+                write!(f, "Unable to create successful http connection: {e:?}")
+            }
+            SaltoApiError::UnsuccessfulApiResponse(msg) => {
+                write!(f, "HttpRequest failed with reason: {}", msg)
+            }
+            SaltoApiError::UnexpectedStatusCode(status) => {
+                write!(
+                    f,
+                    "Status code '{}' was not expected, response will not be processed",
+                    status
+                )
             }
         }
     }
@@ -256,7 +286,8 @@ async fn get_next_salto_user_page(
     config: Arc<Config>,
 ) -> Result<std::vec::IntoIter<serde_json::Value>, SaltoApiError> {
     let formdata = SaltoGetUserListStartingFromItemRequestData::new_from_last_item(last_page_end);
-    match config
+
+    let res = config
         .salto
         .client
         .post(format!(
@@ -266,15 +297,43 @@ async fn get_next_salto_user_page(
         .json(&formdata)
         .send()
         .await
-    {
-        Ok(x) => Ok(x
-            .json::<Vec<serde_json::Value>>()
+        .map_err(SaltoApiError::ConnectionError)?;
+    let statusCode = res.status();
+
+    match statusCode {
+        StatusCode::OK => Ok(res
+            .json::<Vec<JsonValue>>()
             .await
             .map_err(SaltoApiError::DeserializeReqwest)?
             .into_iter()),
-        Err(e) => {
-            warn!("Failed to get a page of users from Salto: {e}");
-            Err(SaltoApiError::CannotGetUsers(e))
+        // Salto RPC will respond with status 500 and a error object
+        // in almost all failure cases
+        StatusCode::INTERNAL_SERVER_ERROR => {
+            let raw = res
+                .text()
+                .await
+                .map_err(SaltoApiError::DeserializeReqwest)?;
+            trace!("Received error response: \n{}", raw);
+
+            let jsonValue = serde_json::from_str(&raw).map_err(SaltoApiError::DeserializeJson)?;
+            let errorResponse: SaltoErrorResponse =
+                serde_json::from_value(jsonValue).map_err(SaltoApiError::DeserializeJson)?;
+
+            Err(SaltoApiError::UnsuccessfulApiResponse(
+                errorResponse.message,
+            ))
+        }
+        _ => {
+            let raw = res
+                .text()
+                .await
+                .map_err(SaltoApiError::DeserializeReqwest)?;
+            warn!(
+                "Received unhandeled http response: Http {}\n{}",
+                statusCode, raw
+            );
+
+            Err(SaltoApiError::UnexpectedStatusCode(statusCode))
         }
     }
 }

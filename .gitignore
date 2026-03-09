@@ -1,3 +1,4 @@
 /target
 .bookings.db
 .env
+config.yaml
