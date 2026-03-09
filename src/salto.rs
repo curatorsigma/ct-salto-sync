@@ -87,12 +87,12 @@ impl core::fmt::Display for SaltoApiError {
                 write!(f, "Unable to create successful http connection: {e:?}")
             }
             SaltoApiError::UnsuccessfulApiResponse(msg) => {
-                write!(f, "HttpRequest failed with reason: {}", msg)
+                write!(f, "HttpRequest failed with reason: {msg}")
             }
             SaltoApiError::UnexpectedStatusCode(status) => {
                 write!(
                     f,
-                    "Status code '{}' was not expected, response will not be processed",
+                    "Status code '{status}' was not expected, response will not be processed"
                     status
                 )
             }
