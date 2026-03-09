@@ -93,7 +93,6 @@ impl core::fmt::Display for SaltoApiError {
                 write!(
                     f,
                     "Status code '{status}' was not expected, response will not be processed"
-                    status
                 )
             }
         }
