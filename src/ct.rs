@@ -7,7 +7,10 @@ use reqwest::header;
 use serde::Deserialize;
 use tracing::warn;
 
-use crate::{Booking, config::AppConfig};
+use crate::{
+    Booking,
+    config::{AppConfig, ConnectionStates},
+};
 
 /// Create a Client with cookie store that sends the correct auth header each time
 ///
@@ -165,15 +168,15 @@ pub struct Timeframe {
 ///     `calendar_id`: ID of the calendar
 ///     `day`: YYYY-mm-dd representation of the day on which to take the date for a repeating
 ///     appointment
-pub async fn get_appointment(
+pub async fn api_get_appointment(
     config: &AppConfig,
+    connections: &ConnectionStates,
     appointment_id: i64,
     calendar_id: i64,
     day: &str,
 ) -> Result<Timeframe, CTApiError> {
-    let response = match config
-        .ct
-        .client
+    let response = match connections
+        .ct_client
         .get(format!(
             "https://{}/api/calendars/{}/appointments/{}",
             config.ct.host, calendar_id, appointment_id
@@ -243,8 +246,9 @@ struct PersonFields {
 
 /// Call out to CT to find all transponder IDs belonging to users contained in at least one of the
 /// groups given by CT group ids.
-async fn get_transponder_ids_in_group(
+async fn api_get_transponder_ids_in_group(
     config: &AppConfig,
+    connections: &ConnectionStates,
     group: &i64,
 ) -> Result<Vec<i64>, CTApiError> {
     let mut res = Vec::<i64>::new();
@@ -258,9 +262,8 @@ async fn get_transponder_ids_in_group(
     loop {
         page += 1;
         query_strings[0].1 = page.to_string();
-        let response = match config
-            .ct
-            .client
+        let response = match connections
+            .ct_client
             .get(format!(
                 "https://{}/api/groups/{}/members",
                 config.ct.host, group
@@ -304,15 +307,14 @@ async fn get_transponder_ids_in_group(
     Ok(res)
 }
 
-async fn get_transponder_ids_in_groups(
+async fn api_get_transponder_ids_in_groups(
     config: &AppConfig,
+    connections: &ConnectionStates,
     groups: &[i64],
 ) -> Result<Vec<i64>, CTApiError> {
-    futures::future::join_all(
-        groups
-            .iter()
-            .map(|group| async move { get_transponder_ids_in_group(config, group).await }),
-    )
+    futures::future::join_all(groups.iter().map(|group| async move {
+        api_get_transponder_ids_in_group(config, connections, group).await
+    }))
     .await
     .into_iter()
     .flatten_ok()
@@ -324,13 +326,13 @@ struct CtGetPersonResponse {
     data: PersonFields,
 }
 
-async fn get_transponder_id_of_user(
+async fn api_get_transponder_id_of_user(
     config: &AppConfig,
+    connections: &ConnectionStates,
     created_by: i64,
 ) -> Result<Option<i64>, CTApiError> {
-    match config
-        .ct
-        .client
+    match connections
+        .ct_client
         .get(format!(
             "https://{}/api/persons/{}",
             config.ct.host, created_by
@@ -362,23 +364,29 @@ async fn get_transponder_id_of_user(
     }
 }
 
-async fn get_permitted_transponders(
+async fn api_get_permitted_transponders(
     config: &AppConfig,
+    connections: &ConnectionStates,
     created_by: i64,
     groups: &[i64],
 ) -> Result<Vec<i64>, CTApiError> {
-    let mut transponders = get_transponder_ids_in_groups(config, groups).await?;
+    let mut transponders = api_get_transponder_ids_in_groups(config, connections, groups).await?;
     tracing::debug!(
         "transponder ids from groupids {groups:?}: {:?}",
         transponders
     );
-    if let Some(creator_transponder_id) = get_transponder_id_of_user(config, created_by).await? {
+    if let Some(creator_transponder_id) =
+        api_get_transponder_id_of_user(config, connections, created_by).await?
+    {
         transponders.push(creator_transponder_id);
     }
     Ok(transponders)
 }
 
-async fn get_raw_bookings(config: &AppConfig) -> Result<CTBookingsResponse, CTApiError> {
+async fn api_get_raw_bookings(
+    config: &AppConfig,
+    connections: &ConnectionStates,
+) -> Result<CTBookingsResponse, CTApiError> {
     // we need to consider bookings from some time ago and some time in the future, because their prehold or posthold times
     // may overlap into today.
     let start_date = chrono::Utc::now().naive_utc() - config.global.posthold_time;
@@ -406,9 +414,8 @@ async fn get_raw_bookings(config: &AppConfig) -> Result<CTBookingsResponse, CTAp
     // request ever being approved.
     query_strings.push(("status_ids[]", "1".to_owned()));
     query_strings.push(("status_ids[]", "2".to_owned()));
-    match config
-        .ct
-        .client
+    match connections
+        .ct_client
         .get(format!("https://{}/api/bookings", config.ct.host))
         .query(&query_strings)
         .send()
@@ -439,8 +446,11 @@ async fn get_raw_bookings(config: &AppConfig) -> Result<CTBookingsResponse, CTAp
 
 /// Get all the relevant bookings from CT. This MAY include to many bookings (i.e. those whose
 /// `prehold_time` or `posthold_time` have not yet started/ have already ended)
-pub async fn get_relevant_bookings(config: &AppConfig) -> Result<Vec<Booking>, CTApiError> {
-    let response = get_raw_bookings(config).await?;
+pub async fn api_get_relevant_bookings(
+    config: &AppConfig,
+    connections: &ConnectionStates,
+) -> Result<Vec<Booking>, CTApiError> {
+    let response = api_get_raw_bookings(config, connections).await?;
 
     futures::future::join_all(response.data.into_iter().map(|x: BookingsData| async move {
         // potentially change the start/end date to those of a calendar appointment if this
@@ -457,7 +467,8 @@ pub async fn get_relevant_bookings(config: &AppConfig) -> Result<Vec<Booking>, C
                 .next()
                 .expect("Split always has a first element");
             let calendar_appointment =
-                get_appointment(config, appointment_id, calendar_id, start_day).await?;
+                api_get_appointment(config, connections, appointment_id, calendar_id, start_day)
+                    .await?;
             (
                 calendar_appointment.start_date,
                 calendar_appointment.end_date,
@@ -472,9 +483,13 @@ pub async fn get_relevant_bookings(config: &AppConfig) -> Result<Vec<Booking>, C
             .description
             .map(|descr| groups_from_description(&descr, &config.ct.group_magic_prefix))
             .unwrap_or_default();
-        let permitted_transponders =
-            get_permitted_transponders(config, x.base.meta.created_person.id, &permitted_groups)
-                .await?;
+        let permitted_transponders = api_get_permitted_transponders(
+            config,
+            connections,
+            x.base.meta.created_person.id,
+            &permitted_groups,
+        )
+        .await?;
 
         Ok::<Booking, CTApiError>(Booking {
             id: x.base.id,

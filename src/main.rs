@@ -1,8 +1,10 @@
 //! Pulls bookings from CT, pushes the users allowed in those bookings to Salto.
-#![allow(unused, non_snake_case)]
+#![allow(non_snake_case)]
 
 use core::str::FromStr;
 use std::env;
+use std::fs::File;
+use std::path::Path;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -10,11 +12,12 @@ use chrono::Utc;
 use ct::CTApiError;
 use db::DBError;
 use salto::SaltoApiError;
+use tokio::sync::Mutex;
 use tracing::{error, info};
 use tracing_subscriber::{EnvFilter, prelude::*};
 use tracing_subscriber::{filter, fmt::format::FmtSpan};
 
-use crate::config::AppConfig;
+use crate::config::{AppConfig, ConfigData, establish_connections};
 
 pub use self::error::{AppErr, Res};
 
@@ -148,22 +151,14 @@ async fn signal_handler(
     Ok(())
 }
 
-const CONFIG_PATH: &str = "/etc/salto-sync/config.yaml";
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn core::error::Error>> {
-    let args: Vec<String> = env::args().collect();
-    let configPath = args
-        .windows(2)
-        .find(|w| w[0].starts_with("-c"))
-        .map(|w| w[1].to_string())
-        .unwrap_or(CONFIG_PATH.to_string());
-
-    let config = Arc::new(AppConfig::create(configPath).await?);
-
-    // Setup tracing
+fn init_logging(level: &String) {
     let my_crate_filter = EnvFilter::new("salto_sync");
-    let level_filter = filter::LevelFilter::from_str(&config.global.log_level)?;
+    let level_filter = filter::LevelFilter::from_str(level).unwrap_or_else(|_| {
+        // need to println because trace not yet configured
+        println!("Unknown log level '{level}', defaulting to INFO");
+        filter::LevelFilter::INFO
+    });
+
     let subscriber = tracing_subscriber::registry().with(my_crate_filter).with(
         tracing_subscriber::fmt::layer()
             .compact()
@@ -172,25 +167,69 @@ async fn main() -> Result<(), Box<dyn core::error::Error>> {
             .with_filter(level_filter),
     );
     tracing::subscriber::set_global_default(subscriber).expect("static tracing config");
-    tracing::info!(
-        "Starting CT -> Salto sync. Got Config, logged in to Salto, and set up tracing."
-    );
 
-    match sqlx::migrate!().run(&config.db).await {
+    let version = env!("CARGO_PKG_VERSION");
+    let name = env!("CARGO_PKG_NAME");
+
+    tracing::info!(
+        "{name} v{version} started: Config loaded, ct & salto login successful. Starting sync..."
+    );
+}
+
+const DEFAULT_CONFIG_PATH: &str = "/etc/salto-sync/config.yaml";
+
+/*
+ * Allowing config path override for testing purposes
+ * can be done via '-c <path>'
+ */
+fn get_config_path() -> String {
+    let args: Vec<String> = env::args().collect();
+
+    args.windows(2)
+        .find(|w| w[0].starts_with("-c"))
+        .map(|w| w[1].to_string())
+        .unwrap_or(DEFAULT_CONFIG_PATH.to_string())
+}
+
+fn read_config_data(path: String) -> Res<ConfigData> {
+    let p = Path::new(&path);
+    let f = File::open(p).map_err(|e| AppErr::IO(path, e))?;
+    let configData: ConfigData = serde_yaml::from_reader(f).map_err(AppErr::ConfigParsingError)?;
+
+    Ok(configData)
+}
+
+async fn init_db(db: &sqlx::Pool<sqlx::Postgres>) -> Result<(), Box<dyn core::error::Error>> {
+    match sqlx::migrate!().run(db).await {
         Ok(()) => {
             tracing::debug!("Migrated DB successfully.");
             Ok(())
         }
         Err(e) => {
             tracing::error!("Error while migrating database: {e}. Aborting.");
-            Err(e)
+            Err(e)?
         }
-    }?;
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn core::error::Error>> {
+    let configPath = get_config_path();
+    let configData = read_config_data(configPath)?;
+    let state = establish_connections(&configData).await?;
+    let connections = Arc::new(Mutex::new(state));
+    let config = Arc::new(AppConfig::create(configData)?);
+    init_logging(&config.global.log_level);
+    init_db(&connections.lock().await.db).await?;
 
     // cancellation channel
     let (tx, rx) = tokio::sync::watch::channel(InShutdown::No);
 
-    let bookings_handle = tokio::spawn(pull_bookings::keep_bookings_up_to_date(config.clone(), rx));
+    let bookings_handle = tokio::spawn(pull_bookings::synchronization_loop(
+        config.clone(),
+        connections.clone(),
+        rx,
+    ));
 
     // start the Signal handler
     let signal_handle = tokio::spawn(signal_handler(tx.subscribe(), tx.clone()));
