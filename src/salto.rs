@@ -20,7 +20,7 @@ use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use tracing::{trace, warn};
 
-use crate::config::{Config, SaltoConfigData};
+use crate::config::{AppConfig, SaltoConfigData};
 
 #[derive(Debug)]
 pub enum SaltoApiError {
@@ -282,7 +282,7 @@ impl Default for SaltoGetUserListStartingFromItemRequestDataReturnRelations {
 /// Assumes that the client is logged in. Requires the full return value that ended the last page.
 async fn get_next_salto_user_page(
     last_page_end: Option<serde_json::Value>,
-    config: Arc<Config>,
+    config: Arc<AppConfig>,
 ) -> Result<std::vec::IntoIter<serde_json::Value>, SaltoApiError> {
     let formdata = SaltoGetUserListStartingFromItemRequestData::new_from_last_item(last_page_end);
 
@@ -353,14 +353,14 @@ type PinnedNextUserRequest = Pin<
 /// leading to the same error. The consumer should handle errors apropriately and potentially
 /// short-circuit on the first (or the first repeated) error.
 struct SaltoUserStream {
-    config: Arc<Config>,
+    config: Arc<AppConfig>,
     last_page_full_last_entry: Option<serde_json::Value>,
     /// Users present on last page - will iterate these to the end before requesting the next page
     on_last_page: Box<dyn ExactSizeIterator<Item = Result<SaltoUser, SaltoApiError>> + Send>,
     current_future: Option<PinnedNextUserRequest>,
 }
 impl SaltoUserStream {
-    pub fn new(config: Arc<Config>) -> Self {
+    pub fn new(config: Arc<AppConfig>) -> Self {
         Self {
             config,
             last_page_full_last_entry: None,
@@ -431,7 +431,7 @@ impl tokio_stream::Stream for SaltoUserStream {
 /// Returns an Error when an API call fails.
 /// When no `ExtId` is found for a user, inserts `None` into the `HashMap`
 pub async fn get_ext_ids_by_transponder<'a, I: Iterator<Item = &'a i64>>(
-    config: Arc<Config>,
+    config: Arc<AppConfig>,
     transponders: I,
 ) -> Result<HashMap<i64, Option<String>>, SaltoApiError> {
     let mut res: HashMap<i64, Option<String>> = transponders

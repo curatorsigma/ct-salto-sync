@@ -3,6 +3,8 @@ use std::{fs::File, path::Path};
 use serde::Deserialize;
 use tracing::{Level, event};
 
+use crate::{AppErr, error::Res};
+
 #[derive(Debug, Deserialize)]
 pub(crate) struct ConfigData {
     pub ct: ChurchToolsConfigData,
@@ -62,32 +64,31 @@ pub(crate) struct SaltoConfig {
 }
 
 #[derive(Debug)]
-pub(crate) struct Config {
+pub(crate) struct AppConfig {
     pub ct: ChurchToolsConfig,
     pub salto: SaltoConfig,
     pub db: sqlx::Pool<sqlx::Postgres>,
     pub global: GlobalConfig,
     pub rooms: Vec<RoomConfig>,
 }
-impl Config {
-    async fn from_config_data(cd: ConfigData) -> Result<Config, Box<dyn core::error::Error>> {
-        let ct_client = crate::ct::create_client(&cd.ct.login_token)?;
-        let salto_client = crate::salto::create_client(&cd.salto).await?;
+impl AppConfig {
+    async fn from_config_data(cd: ConfigData) -> Res<AppConfig> {
+        let ct_client =
+            crate::ct::create_client(&cd.ct.login_token).map_err(AppErr::ChurchToolsError)?;
+        let salto_client = crate::salto::create_client(&cd.salto)
+            .await
+            .map_err(AppErr::SaltoError)?;
 
         // postgres settings
         let url = format!(
             "postgres://{}:{}@{}:{}/{}",
             cd.db.username, cd.db.password, cd.db.host, cd.db.port, cd.db.database
         );
-        let pool = match sqlx::postgres::PgPool::connect(&url).await {
-            Ok(x) => x,
-            Err(e) => {
-                event!(Level::ERROR, "Could not connect to postgres: {e}");
-                return Err(Box::new(e));
-            }
-        };
+        let pool = sqlx::postgres::PgPool::connect(&url)
+            .await
+            .map_err(AppErr::DbConnectionError)?;
 
-        Ok(Config {
+        Ok(AppConfig {
             salto: SaltoConfig {
                 base_url: cd.salto.base_url,
                 client: salto_client,
@@ -104,26 +105,11 @@ impl Config {
         })
     }
 
-    pub async fn create() -> Result<Config, Box<dyn core::error::Error>> {
-        let path = Path::new("/etc/salto-sync/config.yaml");
-        let f = match File::open(path) {
-            Ok(x) => x,
-            Err(e) => {
-                event!(
-                    Level::ERROR,
-                    "config file /etc/salto-sync/config.yaml not readable: {e}"
-                );
-                return Err(Box::new(e));
-            }
-        };
-        let config_data: ConfigData = match serde_yaml::from_reader(f) {
-            Ok(x) => x,
-            Err(e) => {
-                event!(Level::ERROR, "config file had syntax errors: {e}");
-                return Err(Box::new(e));
-            }
-        };
-        Config::from_config_data(config_data).await
+    pub async fn create(configPath: String) -> Res<AppConfig> {
+        let path = Path::new(&configPath);
+        let f = File::open(path).map_err(|e| AppErr::IO(configPath, e))?;
+        let configData = serde_yaml::from_reader(f).map_err(AppErr::ConfigParsingError)?;
+        AppConfig::from_config_data(configData).await
     }
 
     /// Find the `ExtId` for this CT resource in the config
