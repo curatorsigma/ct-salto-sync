@@ -3,14 +3,15 @@
 use std::{collections::HashMap, sync::Arc};
 
 use chrono::{DateTime, Utc};
-use tracing::{debug, info, trace, warn};
+use tokio::sync::Mutex;
+use tracing::{debug, info, warn};
 
 use crate::{
     Booking, GatherError, InShutdown,
-    config::AppConfig,
-    ct::get_relevant_bookings,
-    db::overwrite_staging_table_with,
-    salto::{SaltoApiError, get_ext_ids_by_transponder},
+    config::{AppConfig, ConnectionStates},
+    ct::api_get_relevant_bookings,
+    db::db_overwrite_staging_table_with,
+    salto::{SaltoApiError, api_get_ext_ids},
 };
 
 /// The data we want salto to write into their system in their format.
@@ -34,6 +35,10 @@ fn salto_single_permitted_zone_format(
     end_time: DateTime<Utc>,
 ) -> String {
     let time_format = chrono::format::StrftimeItems::new("%Y-%m-%dT%H:%M:%S");
+    //STFO: It's kind of wired that we're using local time here
+    // -> This is quite obfuscating since we're running the app in docker,
+    // so we would take the local time of the container, which is currently also UTC
+    // => Why would we need local time in this case anyway?
     format!(
         "{{\"{zone_ext_id}\",{},{},{}}}",
         timetable_id,
@@ -46,15 +51,10 @@ fn salto_single_permitted_zone_format(
     )
 }
 
-/// Convert the Vec of bookings into a Vec of entries, one for each user, containing the zones that
-/// user should get access to across all the bookings.
-///
-/// Translates transponder ids into `ExtIds`, "transposes" the structure, and formats the zones and
-/// times into saltos format.
-async fn convert_to_staging_entries(
-    config: Arc<AppConfig>,
+fn match_zones_for_active_bookings(
+    config: &Arc<AppConfig>,
     bookings: Vec<Booking>,
-) -> Result<Vec<StagingEntry>, SaltoApiError> {
+) -> HashMap<i64, String> {
     let mut ext_zone_id_list_by_transponder = HashMap::<i64, String>::new();
     let now = chrono::Utc::now();
     for booking in bookings {
@@ -81,6 +81,8 @@ async fn convert_to_staging_entries(
             booking.start_time,
             booking.end_time,
         );
+
+        // matching zones for all active bookings to the transponder id
         for transponder in booking.permitted_transponders {
             ext_zone_id_list_by_transponder
                 .entry(transponder)
@@ -92,53 +94,84 @@ async fn convert_to_staging_entries(
         }
     }
 
-    trace!("now getting ext ids");
-    let person_ext_ids_by_transponder =
-        get_ext_ids_by_transponder(config, ext_zone_id_list_by_transponder.keys()).await?;
-    trace!("got ext ids");
-    Ok(person_ext_ids_by_transponder
+    ext_zone_id_list_by_transponder
+}
+
+fn to_staging_entries(
+    personExtIds: HashMap<i64, Option<String>>,
+    activeTransponderZones: HashMap<i64, String>,
+) -> Vec<StagingEntry> {
+    personExtIds
         .into_iter()
-        .filter_map(|(transponder, ext_id_opt)| {
-            ext_id_opt.and_then(|ext_id| {
+        .filter_map(|(transponder, extIdOpt)| {
+            extIdOpt.and_then(|extId| {
                 Some(StagingEntry {
-                    ext_user_id: ext_id,
-                    ext_zone_id_list: ext_zone_id_list_by_transponder
-                        .get(&transponder)?
-                        .to_string(),
+                    ext_user_id: extId,
+                    ext_zone_id_list: activeTransponderZones.get(&transponder)?.to_string(),
                 })
             })
         })
-        .collect::<Vec<_>>())
+        .collect::<Vec<_>>()
 }
 
 /// A single run of the sync - get bookings from CT and write them to the staging table.
-async fn sync_once(config: Arc<AppConfig>) -> Result<(), GatherError> {
-    let bookings = get_relevant_bookings(&config).await?;
-    let staging_entries = convert_to_staging_entries(config.clone(), bookings).await?;
-    info!("got staging entries");
-    info!("total of {} entries", staging_entries.len());
-    overwrite_staging_table_with(&config.db, staging_entries).await?;
-    info!("Overwrote staging table with new data.");
+async fn run_sync_once(
+    config: Arc<AppConfig>,
+    connections: Arc<Mutex<ConnectionStates>>,
+) -> Result<(), GatherError> {
+    info!("Starting synchronization ...");
+
+    let bookings = {
+        let guard = connections.lock().await;
+        api_get_relevant_bookings(&config, &*guard).await?
+    };
+    let activeTransponderZones = match_zones_for_active_bookings(&config, bookings);
+
+    let mut personExtIdsResult = api_get_ext_ids(
+        config.clone(),
+        connections.clone(),
+        activeTransponderZones.keys(),
+    )
+    .await;
+
+    personExtIdsResult = match personExtIdsResult {
+        Err(SaltoApiError::CredentialsInvalid(msg) | SaltoApiError::CredentialsExpired(msg)) => {
+            debug!("Credentials error '{msg}', reauth and retry.");
+
+            let conf = &config.clone().salto.salto_config_data;
+            connections.lock().await.salto_client = crate::salto::create_client(conf).await?;
+            api_get_ext_ids(config, connections.clone(), activeTransponderZones.keys()).await
+        }
+        _ => personExtIdsResult,
+    };
+
+    let stagingEntries = to_staging_entries(personExtIdsResult?, activeTransponderZones);
+
+    info!("Got a total of {} staging entries", stagingEntries.len());
+    db_overwrite_staging_table_with(&connections.lock().await.db, stagingEntries).await?;
+
+    info!("Finished synchronization ...");
     Ok(())
 }
 
 /// Continuously pull Data from CT into the DB
-pub async fn keep_bookings_up_to_date(
+pub async fn synchronization_loop(
     config: Arc<AppConfig>,
+    connections: Arc<Mutex<ConnectionStates>>,
     mut watcher: tokio::sync::watch::Receiver<InShutdown>,
 ) {
-    info!("Starting CT -> DB Sync task");
+    info!("Starting Synchronization thread (API pull, DB push)");
     let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
         config.global.sync_frequency.into(),
     ));
     interval.tick().await;
 
     loop {
-        debug!("Now syncing from CT.");
-        match sync_once(config.clone()).await {
+        let syncResult = run_sync_once(config.clone(), connections.clone()).await;
+        match syncResult {
             Ok(()) => {}
             Err(e) => {
-                warn!("Failed to sync CT -> Staging Table: {e}");
+                warn!("Error during synchronization process: {e}");
             }
         }
 

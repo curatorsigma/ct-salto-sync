@@ -90,7 +90,7 @@ async fn remove_entry_by_extid(
 }
 
 /// Ensures that the staging table contains exactly these entries
-pub async fn overwrite_staging_table_with(
+pub async fn db_overwrite_staging_table_with(
     pool: &PgPool,
     entries: Vec<StagingEntry>,
 ) -> Result<(), DBError> {

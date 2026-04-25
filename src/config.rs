@@ -1,7 +1,4 @@
-use std::{fs::File, path::Path};
-
 use serde::Deserialize;
-use tracing::{Level, event};
 
 use crate::{AppErr, error::Res};
 
@@ -17,7 +14,7 @@ pub(crate) struct ConfigData {
 fn default_pgsql_port() -> u16 {
     5432
 }
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub(crate) struct DbData {
     host: String,
     #[serde(default = "default_pgsql_port")]
@@ -38,7 +35,7 @@ impl core::fmt::Debug for DbData {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub(crate) struct SaltoConfigData {
     pub base_url: String,
     pub username: String,
@@ -56,60 +53,66 @@ impl core::fmt::Debug for SaltoConfigData {
             .finish()
     }
 }
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct SaltoConfig {
     pub base_url: String,
-    pub client: reqwest::Client,
     pub timetable_id: u16,
+    pub salto_config_data: SaltoConfigData,
 }
 
 #[derive(Debug)]
 pub(crate) struct AppConfig {
     pub ct: ChurchToolsConfig,
     pub salto: SaltoConfig,
-    pub db: sqlx::Pool<sqlx::Postgres>,
     pub global: GlobalConfig,
     pub rooms: Vec<RoomConfig>,
 }
+
+pub struct ConnectionStates {
+    pub salto_client: reqwest::Client,
+    pub ct_client: reqwest::Client,
+    pub db: sqlx::Pool<sqlx::Postgres>,
+}
+
+pub async fn establish_connections(cd: &ConfigData) -> Res<ConnectionStates> {
+    let ct_client =
+        crate::ct::create_client(&cd.ct.login_token).map_err(AppErr::ChurchToolsError)?;
+    let salto_client = crate::salto::create_client(&cd.salto)
+        .await
+        .map_err(AppErr::SaltoError)?;
+
+    // postgres settings
+    let url = format!(
+        "postgres://{}:{}@{}:{}/{}",
+        cd.db.username, cd.db.password, cd.db.host, cd.db.port, cd.db.database
+    );
+
+    let pool = sqlx::postgres::PgPool::connect(&url)
+        .await
+        .map_err(AppErr::DbConnectionError)?;
+
+    Ok(ConnectionStates {
+        salto_client: salto_client,
+        ct_client: ct_client,
+        db: pool,
+    })
+}
+
 impl AppConfig {
-    async fn from_config_data(cd: ConfigData) -> Res<AppConfig> {
-        let ct_client =
-            crate::ct::create_client(&cd.ct.login_token).map_err(AppErr::ChurchToolsError)?;
-        let salto_client = crate::salto::create_client(&cd.salto)
-            .await
-            .map_err(AppErr::SaltoError)?;
-
-        // postgres settings
-        let url = format!(
-            "postgres://{}:{}@{}:{}/{}",
-            cd.db.username, cd.db.password, cd.db.host, cd.db.port, cd.db.database
-        );
-        let pool = sqlx::postgres::PgPool::connect(&url)
-            .await
-            .map_err(AppErr::DbConnectionError)?;
-
+    pub fn create(configData: ConfigData) -> Res<AppConfig> {
         Ok(AppConfig {
             salto: SaltoConfig {
-                base_url: cd.salto.base_url,
-                client: salto_client,
-                timetable_id: cd.salto.timetable_id,
+                base_url: configData.salto.base_url.clone(),
+                timetable_id: configData.salto.timetable_id,
+                salto_config_data: configData.salto,
             },
             ct: ChurchToolsConfig {
-                host: cd.ct.host,
-                client: ct_client,
-                group_magic_prefix: cd.ct.group_magic_prefix,
+                host: configData.ct.host.clone(),
+                group_magic_prefix: configData.ct.group_magic_prefix.clone(),
             },
-            db: pool,
-            global: cd.global,
-            rooms: cd.rooms,
+            global: configData.global,
+            rooms: configData.rooms,
         })
-    }
-
-    pub async fn create(configPath: String) -> Res<AppConfig> {
-        let path = Path::new(&configPath);
-        let f = File::open(path).map_err(|e| AppErr::IO(configPath, e))?;
-        let configData = serde_yaml::from_reader(f).map_err(AppErr::ConfigParsingError)?;
-        AppConfig::from_config_data(configData).await
     }
 
     /// Find the `ExtId` for this CT resource in the config
@@ -166,7 +169,6 @@ impl core::fmt::Debug for ChurchToolsConfigData {
 #[derive(Debug)]
 pub(crate) struct ChurchToolsConfig {
     pub host: String,
-    pub client: reqwest::Client,
     pub group_magic_prefix: String,
 }
 

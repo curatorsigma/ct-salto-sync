@@ -18,9 +18,10 @@ use reqwest::{StatusCode, header};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
+use tokio::sync::Mutex;
 use tracing::{trace, warn};
 
-use crate::config::{AppConfig, SaltoConfigData};
+use crate::config::{AppConfig, ConnectionStates, SaltoConfigData};
 
 #[derive(Debug)]
 pub enum SaltoApiError {
@@ -34,6 +35,8 @@ pub enum SaltoApiError {
     ConnectionError(reqwest::Error),
     UnexpectedStatusCode(StatusCode),
     UnsuccessfulApiResponse(String),
+    CredentialsInvalid(String),
+    CredentialsExpired(String),
     DeserializeJson(serde_json::Error),
 }
 
@@ -46,6 +49,10 @@ struct SaltoErrorResponse {
     #[serde(rename = "detail")]
     detail: i32,
 }
+
+const SALTO_AUTH_ERROR_RESULT: i32 = -2146233087;
+const EXPIRED_CREDENTIALS_DETAIL: i32 = 21;
+const UNKNOWN_USER_DETAIL: i32 = 6;
 
 impl core::fmt::Display for SaltoApiError {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
@@ -88,6 +95,12 @@ impl core::fmt::Display for SaltoApiError {
             }
             SaltoApiError::UnsuccessfulApiResponse(msg) => {
                 write!(f, "HttpRequest failed with reason: {msg}")
+            }
+            SaltoApiError::CredentialsInvalid(msg) => {
+                write!(f, "Credentials for the request were invalid: {msg}")
+            }
+            SaltoApiError::CredentialsExpired(msg) => {
+                write!(f, "Credentials are no longer valid: {msg}")
             }
             SaltoApiError::UnexpectedStatusCode(status) => {
                 write!(
@@ -283,12 +296,14 @@ impl Default for SaltoGetUserListStartingFromItemRequestDataReturnRelations {
 async fn get_next_salto_user_page(
     last_page_end: Option<serde_json::Value>,
     config: Arc<AppConfig>,
+    connections: Arc<Mutex<ConnectionStates>>,
 ) -> Result<std::vec::IntoIter<serde_json::Value>, SaltoApiError> {
     let formdata = SaltoGetUserListStartingFromItemRequestData::new_from_last_item(last_page_end);
 
-    let res = config
-        .salto
-        .client
+    let res = connections
+        .lock()
+        .await
+        .salto_client
         .post(format!(
             "{}/rpc/GetUserListStartingFromItem",
             config.salto.base_url
@@ -318,9 +333,18 @@ async fn get_next_salto_user_page(
             let errorResponse: SaltoErrorResponse =
                 serde_json::from_value(jsonValue).map_err(SaltoApiError::DeserializeJson)?;
 
-            Err(SaltoApiError::UnsuccessfulApiResponse(
-                errorResponse.message,
-            ))
+            // return specific errors, so we can trigger a reauth in case it makes sense
+            let err = match (errorResponse.h_result, errorResponse.detail) {
+                (SALTO_AUTH_ERROR_RESULT, UNKNOWN_USER_DETAIL) => {
+                    SaltoApiError::CredentialsInvalid(errorResponse.message)
+                }
+                (SALTO_AUTH_ERROR_RESULT, EXPIRED_CREDENTIALS_DETAIL) => {
+                    SaltoApiError::CredentialsExpired(errorResponse.message)
+                }
+                _ => SaltoApiError::UnsuccessfulApiResponse(errorResponse.message),
+            };
+
+            Err(err)
         }
         _ => {
             let raw = res
@@ -354,15 +378,17 @@ type PinnedNextUserRequest = Pin<
 /// short-circuit on the first (or the first repeated) error.
 struct SaltoUserStream {
     config: Arc<AppConfig>,
+    connections: Arc<Mutex<ConnectionStates>>,
     last_page_full_last_entry: Option<serde_json::Value>,
     /// Users present on last page - will iterate these to the end before requesting the next page
     on_last_page: Box<dyn ExactSizeIterator<Item = Result<SaltoUser, SaltoApiError>> + Send>,
     current_future: Option<PinnedNextUserRequest>,
 }
 impl SaltoUserStream {
-    pub fn new(config: Arc<AppConfig>) -> Self {
+    pub fn new(config: Arc<AppConfig>, connections: Arc<Mutex<ConnectionStates>>) -> Self {
         Self {
             config,
+            connections,
             last_page_full_last_entry: None,
             on_last_page: Box::new(vec![].into_iter()),
             current_future: None,
@@ -383,10 +409,11 @@ impl tokio_stream::Stream for SaltoUserStream {
 
         // we have the next future already queued; keep polling it
         if self.current_future.is_none() {
-            let our_config = self.config.clone();
+            let appConfig = self.config.clone();
             self.current_future = Some(Box::pin(get_next_salto_user_page(
                 self.last_page_full_last_entry.clone(),
-                our_config,
+                appConfig,
+                self.connections.clone(),
             )));
         }
 
@@ -430,14 +457,15 @@ impl tokio_stream::Stream for SaltoUserStream {
 /// # Errors
 /// Returns an Error when an API call fails.
 /// When no `ExtId` is found for a user, inserts `None` into the `HashMap`
-pub async fn get_ext_ids_by_transponder<'a, I: Iterator<Item = &'a i64>>(
+pub async fn api_get_ext_ids<'a, I: Iterator<Item = &'a i64>>(
     config: Arc<AppConfig>,
+    connections: Arc<Mutex<ConnectionStates>>,
     transponders: I,
 ) -> Result<HashMap<i64, Option<String>>, SaltoApiError> {
     let mut res: HashMap<i64, Option<String>> = transponders
         .map(|transponder| (*transponder, None))
         .collect();
-    let mut users = SaltoUserStream::new(config).into_stream();
+    let mut users = SaltoUserStream::new(config, connections).into_stream();
     while let Some(user_res) = users.next().await {
         match user_res {
             Err(SaltoApiError::DeserializeDirect(e)) => {
