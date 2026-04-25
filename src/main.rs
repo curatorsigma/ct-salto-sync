@@ -1,6 +1,8 @@
 //! Pulls bookings from CT, pushes the users allowed in those bookings to Salto.
+#![allow(unused, non_snake_case)]
 
 use core::str::FromStr;
+use std::env;
 use std::sync::Arc;
 
 use chrono::Utc;
@@ -12,9 +14,14 @@ use tracing::{error, info};
 use tracing_subscriber::{EnvFilter, prelude::*};
 use tracing_subscriber::{filter, fmt::format::FmtSpan};
 
+use crate::config::AppConfig;
+
+pub use self::error::{AppErr, Res};
+
 mod config;
 mod ct;
 mod db;
+mod error;
 mod pull_bookings;
 mod salto;
 
@@ -141,9 +148,18 @@ async fn signal_handler(
     Ok(())
 }
 
+const CONFIG_PATH: &str = "/etc/salto-sync/config.yaml";
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn core::error::Error>> {
-    let config = Arc::new(config::Config::create().await?);
+    let args: Vec<String> = env::args().collect();
+    let configPath = args
+        .windows(2)
+        .find(|w| w[0].starts_with("-c"))
+        .map(|w| w[1].to_string())
+        .unwrap_or(CONFIG_PATH.to_string());
+
+    let config = Arc::new(AppConfig::create(configPath).await?);
 
     // Setup tracing
     let my_crate_filter = EnvFilter::new("salto_sync");

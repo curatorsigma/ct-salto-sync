@@ -7,7 +7,7 @@ use reqwest::header;
 use serde::Deserialize;
 use tracing::warn;
 
-use crate::{Booking, config::Config};
+use crate::{Booking, config::AppConfig};
 
 /// Create a Client with cookie store that sends the correct auth header each time
 ///
@@ -166,7 +166,7 @@ pub struct Timeframe {
 ///     `day`: YYYY-mm-dd representation of the day on which to take the date for a repeating
 ///     appointment
 pub async fn get_appointment(
-    config: &Config,
+    config: &AppConfig,
     appointment_id: i64,
     calendar_id: i64,
     day: &str,
@@ -244,7 +244,7 @@ struct PersonFields {
 /// Call out to CT to find all transponder IDs belonging to users contained in at least one of the
 /// groups given by CT group ids.
 async fn get_transponder_ids_in_group(
-    config: &Config,
+    config: &AppConfig,
     group: &i64,
 ) -> Result<Vec<i64>, CTApiError> {
     let mut res = Vec::<i64>::new();
@@ -305,7 +305,7 @@ async fn get_transponder_ids_in_group(
 }
 
 async fn get_transponder_ids_in_groups(
-    config: &Config,
+    config: &AppConfig,
     groups: &[i64],
 ) -> Result<Vec<i64>, CTApiError> {
     futures::future::join_all(
@@ -325,7 +325,7 @@ struct CtGetPersonResponse {
 }
 
 async fn get_transponder_id_of_user(
-    config: &Config,
+    config: &AppConfig,
     created_by: i64,
 ) -> Result<Option<i64>, CTApiError> {
     match config
@@ -363,7 +363,7 @@ async fn get_transponder_id_of_user(
 }
 
 async fn get_permitted_transponders(
-    config: &Config,
+    config: &AppConfig,
     created_by: i64,
     groups: &[i64],
 ) -> Result<Vec<i64>, CTApiError> {
@@ -378,7 +378,7 @@ async fn get_permitted_transponders(
     Ok(transponders)
 }
 
-async fn get_raw_bookings(config: &Config) -> Result<CTBookingsResponse, CTApiError> {
+async fn get_raw_bookings(config: &AppConfig) -> Result<CTBookingsResponse, CTApiError> {
     // we need to consider bookings from some time ago and some time in the future, because their prehold or posthold times
     // may overlap into today.
     let start_date = chrono::Utc::now().naive_utc() - config.global.posthold_time;
@@ -439,7 +439,7 @@ async fn get_raw_bookings(config: &Config) -> Result<CTBookingsResponse, CTApiEr
 
 /// Get all the relevant bookings from CT. This MAY include to many bookings (i.e. those whose
 /// `prehold_time` or `posthold_time` have not yet started/ have already ended)
-pub async fn get_relevant_bookings(config: &Config) -> Result<Vec<Booking>, CTApiError> {
+pub async fn get_relevant_bookings(config: &AppConfig) -> Result<Vec<Booking>, CTApiError> {
     let response = get_raw_bookings(config).await?;
 
     futures::future::join_all(response.data.into_iter().map(|x: BookingsData| async move {

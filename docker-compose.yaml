@@ -1,0 +1,16 @@
+# creates a local postgres container for testing 
+services:
+  postgres:
+    image: postgres:16
+    container_name: postgres-dev
+    environment:
+      POSTGRES_USER: dev
+      POSTGRES_PASSWORD: 4321ved
+      POSTGRES_DB: test
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:   

@@ -7,7 +7,7 @@ use tracing::{debug, info, trace, warn};
 
 use crate::{
     Booking, GatherError, InShutdown,
-    config::Config,
+    config::AppConfig,
     ct::get_relevant_bookings,
     db::overwrite_staging_table_with,
     salto::{SaltoApiError, get_ext_ids_by_transponder},
@@ -52,7 +52,7 @@ fn salto_single_permitted_zone_format(
 /// Translates transponder ids into `ExtIds`, "transposes" the structure, and formats the zones and
 /// times into saltos format.
 async fn convert_to_staging_entries(
-    config: Arc<Config>,
+    config: Arc<AppConfig>,
     bookings: Vec<Booking>,
 ) -> Result<Vec<StagingEntry>, SaltoApiError> {
     let mut ext_zone_id_list_by_transponder = HashMap::<i64, String>::new();
@@ -112,7 +112,7 @@ async fn convert_to_staging_entries(
 }
 
 /// A single run of the sync - get bookings from CT and write them to the staging table.
-async fn sync_once(config: Arc<Config>) -> Result<(), GatherError> {
+async fn sync_once(config: Arc<AppConfig>) -> Result<(), GatherError> {
     let bookings = get_relevant_bookings(&config).await?;
     let staging_entries = convert_to_staging_entries(config.clone(), bookings).await?;
     info!("got staging entries");
@@ -124,7 +124,7 @@ async fn sync_once(config: Arc<Config>) -> Result<(), GatherError> {
 
 /// Continuously pull Data from CT into the DB
 pub async fn keep_bookings_up_to_date(
-    config: Arc<Config>,
+    config: Arc<AppConfig>,
     mut watcher: tokio::sync::watch::Receiver<InShutdown>,
 ) {
     info!("Starting CT -> DB Sync task");
