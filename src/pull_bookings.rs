@@ -90,7 +90,7 @@ fn match_zones_for_active_bookings(
                     l.push(',');
                     l.push_str(&additional_zone);
                 })
-                .or_insert(additional_zone.to_string());
+                .or_insert(additional_zone.clone());
         }
     }
 
@@ -99,7 +99,7 @@ fn match_zones_for_active_bookings(
 
 fn to_staging_entries(
     personExtIds: HashMap<i64, Option<String>>,
-    activeTransponderZones: HashMap<i64, String>,
+    activeTransponderZones: &HashMap<i64, String>,
 ) -> Vec<StagingEntry> {
     personExtIds
         .into_iter()
@@ -107,7 +107,7 @@ fn to_staging_entries(
             extIdOpt.and_then(|extId| {
                 Some(StagingEntry {
                     ext_user_id: extId,
-                    ext_zone_id_list: activeTransponderZones.get(&transponder)?.to_string(),
+                    ext_zone_id_list: activeTransponderZones.get(&transponder)?.clone(),
                 })
             })
         })
@@ -123,7 +123,7 @@ async fn run_sync_once(
 
     let bookings = {
         let guard = connections.lock().await;
-        api_get_relevant_bookings(&config, &*guard).await?
+        api_get_relevant_bookings(&config, &guard).await?
     };
     let activeTransponderZones = match_zones_for_active_bookings(&config, bookings);
 
@@ -138,14 +138,14 @@ async fn run_sync_once(
         Err(SaltoApiError::CredentialsInvalid(msg) | SaltoApiError::CredentialsExpired(msg)) => {
             debug!("Credentials error '{msg}', reauth and retry.");
 
-            let conf = &config.clone().salto.salto_config_data;
+            let conf = &config.clone().salto;
             connections.lock().await.salto_client = crate::salto::create_client(conf).await?;
             api_get_ext_ids(config, connections.clone(), activeTransponderZones.keys()).await
         }
         _ => personExtIdsResult,
     };
 
-    let stagingEntries = to_staging_entries(personExtIdsResult?, activeTransponderZones);
+    let stagingEntries = to_staging_entries(personExtIdsResult?, &activeTransponderZones);
 
     info!("Got a total of {} staging entries", stagingEntries.len());
     db_overwrite_staging_table_with(&connections.lock().await.db, stagingEntries).await?;

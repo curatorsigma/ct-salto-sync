@@ -5,7 +5,7 @@ use crate::{AppErr, error::Res};
 #[derive(Debug, Deserialize)]
 pub(crate) struct ConfigData {
     pub ct: ChurchToolsConfigData,
-    pub salto: SaltoConfigData,
+    pub salto: SaltoConfig,
     pub db: DbData,
     pub global: GlobalConfig,
     pub rooms: Vec<RoomConfig>,
@@ -36,28 +36,22 @@ impl core::fmt::Debug for DbData {
 }
 
 #[derive(Deserialize, Clone)]
-pub(crate) struct SaltoConfigData {
+pub(crate) struct SaltoConfig {
     pub base_url: String,
     pub username: String,
     pub password: String,
     #[serde(default = "u16::default")]
     pub timetable_id: u16,
 }
-impl core::fmt::Debug for SaltoConfigData {
+impl core::fmt::Debug for SaltoConfig {
     fn fmt(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
-        f.debug_struct("SaltoConfigData")
+        f.debug_struct("SaltoConfig")
             .field("base_url", &self.base_url)
             .field("username", &self.username)
             .field("password", &"[redacted]")
             .field("timetable_id", &self.timetable_id)
             .finish()
     }
-}
-#[derive(Debug, Clone)]
-pub(crate) struct SaltoConfig {
-    pub base_url: String,
-    pub timetable_id: u16,
-    pub salto_config_data: SaltoConfigData,
 }
 
 #[derive(Debug)]
@@ -92,29 +86,27 @@ pub async fn establish_connections(cd: &ConfigData) -> Res<ConnectionStates> {
         .map_err(AppErr::DbConnectionError)?;
 
     Ok(ConnectionStates {
-        salto_client: salto_client,
-        ct_client: ct_client,
+        salto_client,
+        ct_client,
         db: pool,
     })
 }
 
-impl AppConfig {
-    pub fn create(configData: ConfigData) -> Res<AppConfig> {
-        Ok(AppConfig {
-            salto: SaltoConfig {
-                base_url: configData.salto.base_url.clone(),
-                timetable_id: configData.salto.timetable_id,
-                salto_config_data: configData.salto,
-            },
+impl From<ConfigData> for AppConfig {
+    fn from(value: ConfigData) -> Self {
+        AppConfig {
+            salto: value.salto,
             ct: ChurchToolsConfig {
-                host: configData.ct.host.clone(),
-                group_magic_prefix: configData.ct.group_magic_prefix.clone(),
+                host: value.ct.host.clone(),
+                group_magic_prefix: value.ct.group_magic_prefix.clone(),
             },
-            global: configData.global,
-            rooms: configData.rooms,
-        })
+            global: value.global,
+            rooms: value.rooms,
+        }
     }
+}
 
+impl AppConfig {
     /// Find the `ExtId` for this CT resource in the config
     pub fn room_ext_id(&self, resource_id: i64) -> Option<&String> {
         self.rooms

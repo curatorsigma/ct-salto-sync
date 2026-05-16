@@ -21,7 +21,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use tracing::{trace, warn};
 
-use crate::config::{AppConfig, ConnectionStates, SaltoConfigData};
+use crate::config::{AppConfig, ConnectionStates, SaltoConfig};
 
 #[derive(Debug)]
 pub enum SaltoApiError {
@@ -50,7 +50,7 @@ struct SaltoErrorResponse {
     detail: i32,
 }
 
-const SALTO_AUTH_ERROR_RESULT: i32 = -2146233087;
+const SALTO_AUTH_ERROR_RESULT: i32 = -2_146_233_087;
 const EXPIRED_CREDENTIALS_DETAIL: i32 = 21;
 const UNKNOWN_USER_DETAIL: i32 = 6;
 
@@ -171,7 +171,7 @@ struct AuthorizationTokenResponse {
     access_token: String,
 }
 /// Log in to salto and return the `access_token` gotten from the Oauth endpoint
-async fn salto_login(config: &SaltoConfigData) -> Result<String, SaltoApiError> {
+async fn salto_login(config: &SaltoConfig) -> Result<String, SaltoApiError> {
     let mut form_data = HashMap::new();
     form_data.insert("grant_type", "password");
     form_data.insert("client_id", "webapp");
@@ -214,7 +214,7 @@ async fn salto_login(config: &SaltoConfigData) -> Result<String, SaltoApiError> 
     )
 }
 
-pub async fn create_client(config: &SaltoConfigData) -> Result<reqwest::Client, SaltoApiError> {
+pub async fn create_client(config: &SaltoConfig) -> Result<reqwest::Client, SaltoApiError> {
     let mut headers = header::HeaderMap::new();
     headers.insert(
         header::ACCEPT,
