@@ -24,4 +24,4 @@ impl core::fmt::Display for AppErr {
     }
 }
 
-impl std::error::Error for AppErr {}
+impl core::error::Error for AppErr {}

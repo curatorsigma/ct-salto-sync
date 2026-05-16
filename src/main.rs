@@ -186,9 +186,8 @@ fn get_config_path() -> String {
     let args: Vec<String> = env::args().collect();
 
     args.windows(2)
-        .find(|w| w[0].starts_with("-c"))
-        .map(|w| w[1].to_string())
-        .unwrap_or(DEFAULT_CONFIG_PATH.to_string())
+        .find(|window| window[0].starts_with("-c"))
+        .map_or(DEFAULT_CONFIG_PATH.to_string(), |window| window[1].clone())
 }
 
 fn read_config_data(path: String) -> Res<ConfigData> {
@@ -218,7 +217,7 @@ async fn main() -> Result<(), Box<dyn core::error::Error>> {
     let configData = read_config_data(configPath)?;
     let state = establish_connections(&configData).await?;
     let connections = Arc::new(Mutex::new(state));
-    let config = Arc::new(AppConfig::create(configData)?);
+    let config: Arc<AppConfig> = Arc::new(configData.into());
     init_logging(&config.global.log_level);
     init_db(&connections.lock().await.db).await?;
 
